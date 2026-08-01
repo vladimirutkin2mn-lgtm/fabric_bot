@@ -11,7 +11,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart
 from aiogram.methods import AnswerCallbackQuery, SendMessage, TelegramMethod
 from aiogram.methods.base import TelegramType
-from aiogram.types import CallbackQuery, Chat, Message, Update
+from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update
 from aiogram.types import User as TelegramUser
 
 from app.bot import texts
@@ -125,7 +125,7 @@ def start_update(update_id: int = 1, user_id: int = 42) -> Update:
             chat=Chat(id=user_id, type="private"),
             from_user=user,
             text="/start",
-            entities=[{"type": "bot_command", "offset": 0, "length": 6}],
+            entities=[MessageEntity(type="bot_command", offset=0, length=6)],
         ),
     )
 
