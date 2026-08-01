@@ -62,6 +62,17 @@ pytest
 docker compose config --quiet
 ```
 
+Интеграционные тесты репозитория используют настоящий PostgreSQL и тот же async-драйвер,
+что production-код:
+
+```bash
+docker compose up -d postgres
+TEST_DATABASE_URL=postgresql+asyncpg://heartsignal:heartsignal@localhost:5432/heartsignal pytest -m postgres
+```
+
+Без `TEST_DATABASE_URL` PostgreSQL-тесты пропускаются. В CI переменная указывает на
+отдельный service container, поэтому полный запуск `pytest` всегда выполняет эти тесты.
+
 Настройки читаются из окружения; полный перечень и безопасные шаблонные значения находятся
 в `.env.example`. Секреты и `.env` не следует коммитить.
 

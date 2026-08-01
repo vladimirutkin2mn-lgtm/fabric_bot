@@ -152,13 +152,14 @@ async def test_changed_consent_version_requires_reacceptance(
     identity: TelegramIdentity,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, _, service = components
+    users, _, service = components
     await service.start(identity)
     await service.confirm_age(42)
     await service.accept_consent(42)
 
     monkeypatch.setattr(onboarding_module, "CURRENT_CONSENT_VERSION", "2.0")
     assert await service.current_step(42) is OnboardingStep.CONSENT
+    assert not users.users[42].onboarding_completed
     assert not await service.analysis_allowed(42)
     assert await service.accept_consent(42) is OnboardingStep.COMPLETE
 
