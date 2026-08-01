@@ -27,11 +27,13 @@ def engine_mock(*, connection_error: Exception | None = None) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_liveness(settings: Settings) -> None:
-    app = create_app(settings, engine_mock())
+    engine = engine_mock()
+    app = create_app(settings, engine)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/health/live")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    engine.connect.assert_not_called()
 
 
 @pytest.mark.asyncio
