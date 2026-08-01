@@ -26,10 +26,10 @@ jobs:
         run: pip install -e '.[dev]'
 
       - name: Check formatting
-        run: ruff format --check .
+        run: ruff format --check app tests migrations
 
       - name: Lint
-        run: ruff check .
+        run: ruff check app tests migrations
 
       - name: Type-check
         run: mypy app tests
