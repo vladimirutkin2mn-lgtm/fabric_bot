@@ -59,6 +59,17 @@ class SqlAlchemyUserRepository:
         user = await self.get_by_telegram_id(telegram_user_id)
         if user is None:  # pragma: no cover - protected by the database constraint
             raise RuntimeError("User upsert did not return a persisted row")
+        profile = (username, first_name, language)
+        stored_profile = (
+            user.telegram_username,
+            user.first_name,
+            user.telegram_language,
+        )
+        if stored_profile != profile:
+            user.telegram_username = username
+            user.first_name = first_name
+            user.telegram_language = language
+            await self.save(user)
         return user, inserted_id is not None
 
     async def get_by_telegram_id(self, telegram_user_id: int) -> User | None:

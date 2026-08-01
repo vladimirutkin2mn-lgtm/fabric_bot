@@ -48,7 +48,7 @@ class OnboardingService:
             identity.language,
         )
         await self._analytics.track(str(user.id), "bot_started")
-        step = self.step_for(user)
+        step = await self._synchronize_completion(user)
         if step is OnboardingStep.COMPLETE:
             await self._analytics.track(str(user.id), "main_menu_opened")
         return user, step
@@ -80,11 +80,22 @@ class OnboardingService:
 
     async def analysis_allowed(self, telegram_user_id: int) -> bool:
         user = await self._users.get_by_telegram_id(telegram_user_id)
-        return user is not None and self.step_for(user) is OnboardingStep.COMPLETE
+        return (
+            user is not None and await self._synchronize_completion(user) is OnboardingStep.COMPLETE
+        )
 
     async def current_step(self, telegram_user_id: int) -> OnboardingStep:
         user = await self._users.get_by_telegram_id(telegram_user_id)
-        return self.step_for(user) if user is not None else OnboardingStep.AGE
+        return await self._synchronize_completion(user) if user is not None else OnboardingStep.AGE
+
+    async def _synchronize_completion(self, user: User) -> OnboardingStep:
+        """Keep the persisted convenience flag aligned with current consent rules."""
+        step = self.step_for(user)
+        completed = step is OnboardingStep.COMPLETE
+        if user.onboarding_completed != completed:
+            user.onboarding_completed = completed
+            await self._users.save(user)
+        return step
 
     async def _required_user(self, telegram_user_id: int) -> User:
         user = await self._users.get_by_telegram_id(telegram_user_id)

@@ -18,6 +18,16 @@ from app.services.onboarding import (
 router = Router(name="onboarding")
 
 
+def identity_from_callback(callback: CallbackQuery) -> TelegramIdentity:
+    telegram_user = callback.from_user
+    return TelegramIdentity(
+        telegram_user_id=telegram_user.id,
+        username=telegram_user.username,
+        first_name=telegram_user.first_name,
+        language=telegram_user.language_code,
+    )
+
+
 async def show_step(message: Message, state: FSMContext, step: OnboardingStep) -> None:
     if step is OnboardingStep.AGE:
         await state.set_state(OnboardingStates.waiting_for_age)
@@ -61,6 +71,8 @@ async def decline_age(callback: CallbackQuery, state: FSMContext) -> None:
 async def confirm_age(
     callback: CallbackQuery, state: FSMContext, onboarding: OnboardingService
 ) -> None:
+    if await onboarding.current_step(callback.from_user.id) is OnboardingStep.AGE:
+        await onboarding.start(identity_from_callback(callback))
     step = await onboarding.confirm_age(callback.from_user.id)
     await callback.answer()
     if isinstance(callback.message, Message):
@@ -71,6 +83,8 @@ async def confirm_age(
 async def accept_consent(
     callback: CallbackQuery, state: FSMContext, onboarding: OnboardingService
 ) -> None:
+    if await onboarding.current_step(callback.from_user.id) is OnboardingStep.AGE:
+        await onboarding.start(identity_from_callback(callback))
     step = await onboarding.accept_consent(callback.from_user.id)
     await callback.answer()
     if isinstance(callback.message, Message):
