@@ -23,7 +23,7 @@ def test_settings_are_loaded_from_environment(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("CONTENT_ENCRYPTION_KEY", "environment-secret")
     monkeypatch.setenv("RAW_CONTENT_RETENTION_DAYS", "45")
 
-    configured = Settings(_env_file=None)  # type: ignore[call-arg]
+    configured = Settings(_env_file=None)
 
     assert configured.app_env == "staging"
     assert configured.log_level == "DEBUG"

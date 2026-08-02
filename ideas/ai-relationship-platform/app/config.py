@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     llm_model: str = "stub"
     content_encryption_key: SecretStr
     raw_content_retention_days: int = Field(default=30, ge=1)
+    conversation_min_messages: int = Field(default=4, ge=1)
+    conversation_max_characters: int = Field(default=30_000, ge=1)
+    conversation_max_participants: int = Field(default=2, ge=2)
+    analysis_goal_max_characters: int = Field(default=500, ge=1)
 
     @property
     def webhook_enabled(self) -> bool:
@@ -33,4 +37,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Return a process-wide immutable settings instance."""
-    return Settings()  # type: ignore[call-arg]
+    return Settings()
