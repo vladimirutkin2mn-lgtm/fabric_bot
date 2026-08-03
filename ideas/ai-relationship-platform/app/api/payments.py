@@ -20,6 +20,24 @@ from app.services.payment_service import PaymentCompletionOutcome, PaymentServic
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
+@router.get("/return/{token}", response_class=HTMLResponse)
+async def payment_return(token: UUID, request: Request) -> HTMLResponse:
+    """Show internal state only; browser parameters can never complete an order."""
+    order = await request.app.state.payment_service.order_by_token(token)
+    if order is None:
+        raise HTTPException(404)
+    label = {
+        "completed": "Оплата получена",
+        "failed": "Оплата не прошла",
+        "cancelled": "Оплата отменена",
+        "manual_review": "Оплата проверяется",
+    }.get(order.status, "Оплата обрабатывается")
+    return HTMLResponse(
+        f"<!doctype html><title>Статус оплаты</title><h1>{label}</h1>"
+        "<p>Вернитесь в бот. HeartSignal не собирает данные карты.</p>"
+    )
+
+
 def _services(request: Request) -> tuple[PaymentService, MockPaymentProvider, ProductCatalog]:
     return (
         request.app.state.payment_service,

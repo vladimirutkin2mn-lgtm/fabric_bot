@@ -102,6 +102,22 @@ class PaymentProviderError(Exception):
     pass
 
 
+class RetryableProviderError(PaymentProviderError):
+    """The operation is safe to retry with the original idempotency key."""
+
+
+class UnknownProviderOutcome(RetryableProviderError):
+    """Transport failed after the provider might have accepted the request."""
+
+
+class PermanentProviderError(PaymentProviderError):
+    """Provider rejected the request and retrying it unchanged cannot help."""
+
+
+class ProviderStateMismatch(PermanentProviderError):
+    """Authoritative state does not match the immutable internal order."""
+
+
 class PaymentSignatureError(PaymentProviderError):
     pass
 

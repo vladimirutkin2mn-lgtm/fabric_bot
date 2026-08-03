@@ -193,7 +193,7 @@ class PaymentOrder(Base):
     __tablename__ = "payment_orders"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('creating','pending','completed','failed','cancelled')",
+            "status IN ('creating','pending','completed','failed','cancelled','manual_review')",
             name="ck_payment_orders_status",
         ),
         CheckConstraint("credits > 0 AND amount_minor > 0", name="ck_payment_orders_positive"),
@@ -208,6 +208,8 @@ class PaymentOrder(Base):
             "user_id",
             "provider",
             "product_code",
+            "market",
+            "currency",
             unique=True,
             postgresql_where=text("status IN ('creating','pending')"),
         ),
@@ -257,6 +259,10 @@ class PaymentOrder(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkout_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_live_mode: Mapped[bool | None] = mapped_column(Boolean)
+    encrypted_receipt_contact: Mapped[bytes | None] = mapped_column(LargeBinary)
 
 
 class CreditTransaction(Base):
@@ -497,3 +503,32 @@ class BillingJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class BillingOutboxEvent(Base):
+    """Append-only transactional handoff for non-financial side effects."""
+
+    __tablename__ = "billing_outbox_events"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','claimed','completed','failed','manual_review')",
+            name="ck_billing_outbox_status",
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    aggregate_type: Mapped[str] = mapped_column(String(64))
+    aggregate_id: Mapped[str] = mapped_column(String(255))
+    event_type: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, server_default="{}")
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    claimed_by: Mapped[str | None] = mapped_column(String(255))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

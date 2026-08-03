@@ -1,66 +1,42 @@
-# Billing state machines
+# Payment state machines
 
-Dashed arrows are future milestones; M5B.1 supplies schemas and invariants only.
+Financial locking order is `User -> PaymentOrder -> webhook/job -> CreditTransaction ->
+outbox`. Provider retrieval happens before that transaction. A unique purchase key and
+payment identities make completion exactly once under webhook/reconciliation races.
 
-## PaymentOrder
 ```mermaid
 stateDiagram-v2
-  creating --> pending
-  pending --> completed: verified payment
-  creating --> failed
-  pending --> failed
-  pending --> cancelled
+ [*] --> creating
+ creating --> pending: hosted checkout saved
+ creating --> creating: unknown / same-key retry
+ creating --> manual_review: retries exhausted
+ pending --> completed: authoritative paid
+ pending --> failed: authoritative canceled/expired
+ pending --> manual_review: validation mismatch
+ completed --> completed: duplicate
 ```
 
-## Subscription
 ```mermaid
 stateDiagram-v2
-  incomplete --> active
-  active --> past_due: renewal fails
-  active --> cancel_at_period_end
-  cancel_at_period_end --> canceled
-  past_due --> active: payment recovers
-  past_due --> unpaid
-  active --> paused
-  paused --> active
-```
-All transitions above are future execution behavior.
-
-## ProviderWebhookEvent
-```mermaid
-stateDiagram-v2
-  pending --> processing
-  processing --> completed
-  processing --> failed
-  failed --> pending: retry
-  processing --> manual_review
+ [*] --> pending
+ pending --> claimed
+ claimed --> completed
+ claimed --> pending: retry/backoff
+ claimed --> manual_review: permanent mismatch
+ claimed --> claimed: expired lease recovered
 ```
 
-## RefundRequest
 ```mermaid
 stateDiagram-v2
-  requested --> credits_reserved
-  credits_reserved --> provider_pending
-  provider_pending --> succeeded
-  provider_pending --> failed
-  provider_pending --> manual_review
-```
-Provider transitions and the matching negative ledger entry are future M5B.4 behavior.
-
-## CreditReservation
-```mermaid
-stateDiagram-v2
-  active --> consumed: refund succeeds
-  active --> released: refund abandoned/fails
+ [*] --> pending
+ pending --> claimed
+ claimed --> completed: delivered
+ claimed --> pending: delivery outage
+ claimed --> failed: retry limit
+ claimed --> claimed: expired lease recovered
 ```
 
-## BillingJob
-```mermaid
-stateDiagram-v2
-  pending --> claimed
-  claimed --> completed
-  claimed --> failed
-  failed --> pending: retry available
-  claimed --> manual_review
-```
-Worker-driven transitions are future work; lease and availability fields make them durable.
+Inbox and job creation share a transaction. Workers claim through PostgreSQL
+`FOR UPDATE SKIP LOCKED` with expiring leases. Reconciliation covers stale creating,
+unknown, old pending, expired claims, and retryable failures. It fetches authoritative
+state when an ID exists, or repeats creation with the stable key after ambiguous create.

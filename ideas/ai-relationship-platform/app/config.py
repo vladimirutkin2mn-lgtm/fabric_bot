@@ -52,8 +52,10 @@ class Settings(BaseSettings):
     yookassa_shop_id: SecretStr = Field(default=SecretStr(""), repr=False)
     yookassa_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
     yookassa_receipt_email: str = ""
+    yookassa_receipts_required: bool = False
     yookassa_vat_code: int = Field(default=1, ge=1, le=6)
     yookassa_webhook_ip_allowlist: str = ""
+    yookassa_trusted_proxy_allowlist: str = ""
     billing_trusted_proxies: str = ""
     stripe_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
     stripe_webhook_secret: SecretStr = Field(default=SecretStr(""), repr=False)
@@ -68,6 +70,9 @@ class Settings(BaseSettings):
     billing_worker_max_attempts: int = Field(default=10, ge=1)
     billing_retry_base_seconds: int = Field(default=30, gt=0)
     billing_reconciliation_interval_seconds: int = Field(default=900, gt=0)
+    billing_pending_reconciliation_seconds: int = Field(default=900, gt=0)
+    payment_webhook_max_bytes: int = Field(default=262_144, gt=0)
+    provider_request_timeout_seconds: float = Field(default=15, gt=0)
     subscription_grace_period_days: int = Field(default=3, ge=0)
     billing_consent_version: str = "billing-v1"
 
@@ -99,9 +104,7 @@ class Settings(BaseSettings):
         if self.billing_enabled and self.payment_provider == "mock":
             raise ValueError("mock payment provider is forbidden in production")
         if self.yookassa_enabled and not (
-            self.yookassa_shop_id.get_secret_value()
-            and self.yookassa_secret_key.get_secret_value()
-            and self.yookassa_receipt_email
+            self.yookassa_shop_id.get_secret_value() and self.yookassa_secret_key.get_secret_value()
         ):
             raise ValueError("YooKassa configuration is incomplete")
         stripe_key = self.stripe_secret_key.get_secret_value()
