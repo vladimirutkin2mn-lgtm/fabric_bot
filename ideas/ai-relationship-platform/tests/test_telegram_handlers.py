@@ -314,7 +314,15 @@ async def test_complete_intake_duplicate_callbacks_and_restart_resume(harness: H
 
     second = await intake.start(users.users[42])
     await intake.submit(second, "A: 1\nB: 2\nA: 3\nB: 4")
-    await dispatcher.feed_update(bot, start_update(18), onboarding=service, intake=intake)
+    await dispatcher.feed_update(
+        bot, callback_update(f"intake:reset:{draft.id}", 18), onboarding=service, intake=intake
+    )
+    await dispatcher.feed_update(
+        bot, callback_update(f"intake:cancel:{draft.id}", 19), onboarding=service, intake=intake
+    )
+    assert draft.intake_step == "complete" and draft.status == "draft"
+    assert second.intake_step == "waiting_for_participant"
+    await dispatcher.feed_update(bot, start_update(20), onboarding=service, intake=intake)
     assert sent_texts(session)[-1] == texts.PARTICIPANT_QUESTION
 
 

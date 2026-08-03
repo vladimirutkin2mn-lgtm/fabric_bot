@@ -332,8 +332,13 @@ async def cancel_intake(
 ) -> None:
     parts = _callback_parts(callback)
     analysis = await _owned(callback, onboarding, intake, parts[2] if len(parts) > 2 else "")
-    if analysis is not None:
+    try:
+        if analysis is None:
+            raise InvalidTransition("missing")
         await intake.cancel(analysis)
+    except InvalidTransition:
+        await callback.answer(texts.STALE_DRAFT, show_alert=True)
+        return
     await callback.answer()
     await state.clear()
     if isinstance(callback.message, Message):
@@ -352,7 +357,11 @@ async def resend(
     if analysis is None:
         await callback.answer(texts.STALE_DRAFT, show_alert=True)
         return
-    await intake.reset_conversation(analysis)
+    try:
+        await intake.reset_conversation(analysis)
+    except InvalidTransition:
+        await callback.answer(texts.STALE_DRAFT, show_alert=True)
+        return
     await callback.answer()
     if isinstance(callback.message, Message):
         await state.set_state(IntakeStates.waiting_for_conversation)

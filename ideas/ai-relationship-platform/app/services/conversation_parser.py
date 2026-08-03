@@ -45,17 +45,22 @@ class ParsedConversation:
 
 _PREFIX = re.compile(r"^(?:\[(?P<ts>[^]]+)\]\s*)?(?P<name>[^:\n]{1,100}):\s*(?P<text>.*)$")
 _TELEGRAM = re.compile(r"^(?P<name>.+?),\s*\[(?P<ts>[^]]+)\]\s*$")
-_TIMESTAMP_FORMATS = ("%d.%m.%Y %H:%M", "%H:%M")
+_DATETIME_FORMAT = "%d.%m.%Y %H:%M"
+_TIME_FORMAT = "%H:%M"
 
 
 def _timestamp(value: str | None) -> str | None:
     if value is None:
         return None
-    for timestamp_format in _TIMESTAMP_FORMATS:
-        try:
-            return datetime.strptime(value.strip(), timestamp_format).isoformat()
-        except ValueError:
-            continue
+    stripped = value.strip()
+    try:
+        return datetime.strptime(stripped, _DATETIME_FORMAT).isoformat()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(stripped, _TIME_FORMAT).time().isoformat()
+    except ValueError:
+        pass
     return None
 
 

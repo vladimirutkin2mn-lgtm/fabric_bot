@@ -25,6 +25,7 @@ def test_timestamp_and_multiline_formats() -> None:
         "[12.07.2026 18:45] Анна: Привет!\n[18:47] Иван: Привет"
     )
     assert timestamped.messages[0].timestamp == "2026-07-12T18:45:00"
+    assert timestamped.messages[1].timestamp == "18:47:00"
     multiline = ConversationParser(min_messages=2).parse(
         "Анна, [12.07.2026 18:45]\nПривет!\nКак день?\n\nИван, [12.07.2026 18:47]\nПривет\nНормально"
     )

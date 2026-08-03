@@ -125,8 +125,14 @@ async def test_invalid_transitions_participant_goal_stage_and_cancellation(
     await service.relationship_stage(draft, "not_provided")
     await service.relationship_stage(draft, "not_provided")
     assert draft.intake_step == "complete" and draft.status == "draft"
-    await service.cancel(draft)
-    await service.cancel(draft)
+    with pytest.raises(InvalidTransition):
+        await service.cancel(draft)
+    with pytest.raises(InvalidTransition):
+        await service.reset_conversation(draft)
+    cancellable = await service.start(user)
+    await service.cancel(cancellable)
+    await service.cancel(cancellable)
+    assert draft.intake_step == "complete" and draft.status == "draft"
     assert [event for event, _ in analytics.events].count("analysis_cancelled") == 1
 
 

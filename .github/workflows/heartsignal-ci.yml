@@ -50,6 +50,16 @@ jobs:
       - name: Type-check
         run: mypy app tests
 
+      - name: Validate Alembic migration chain
+        env:
+          DATABASE_URL: postgresql+asyncpg://heartsignal:heartsignal@localhost:5432/heartsignal_test
+          TELEGRAM_BOT_TOKEN: 123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          CONTENT_ENCRYPTION_KEY: ci-only-key
+        run: |
+          alembic upgrade head
+          alembic downgrade -1
+          alembic upgrade head
+
       - name: Test
         run: pytest
 

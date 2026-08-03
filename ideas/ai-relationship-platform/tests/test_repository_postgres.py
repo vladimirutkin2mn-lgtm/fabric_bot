@@ -21,7 +21,7 @@ from app.db.models import Analysis, User
 from app.providers.analytics import NoOpAnalyticsClient
 from app.repositories.analyses import SqlAlchemyAnalysisRepository
 from app.repositories.users import SqlAlchemyUserRepository
-from app.services.conversation_intake import ConversationIntakeService
+from app.services.conversation_intake import ConversationIntakeService, InvalidTransition
 from app.services.conversation_parser import ConversationParser
 
 pytestmark = pytest.mark.postgres
@@ -251,3 +251,34 @@ async def test_reset_persists_cleared_sensitive_fields(
         assert stored is not None and stored.intake_step == "waiting_for_conversation"
         assert stored.normalized_conversation_json is None and stored.participants_json is None
         assert stored.user_goal is None and stored.user_participant_label is None
+
+
+async def test_stale_callbacks_cannot_mutate_completed_analysis_with_active_successor(
+    postgres: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres
+    user = await _persist_user(sessions, 205)
+    async with sessions() as session:
+        repository = SqlAlchemyAnalysisRepository(session)
+        service = ConversationIntakeService(repository, ConversationParser(), NoOpAnalyticsClient())
+        completed, _ = await repository.create_or_resume(user.id)
+        completed.intake_step = "complete"
+        await repository.save(completed)
+        active, created = await repository.create_or_resume(user.id)
+        assert created
+        with pytest.raises(InvalidTransition):
+            await service.reset_conversation(completed)
+        with pytest.raises(InvalidTransition):
+            await service.cancel(completed)
+        completed_id, active_id = completed.id, active.id
+    async with sessions() as session:
+        repository = SqlAlchemyAnalysisRepository(session)
+        stored_completed = await repository.get_owned(completed_id, user.id)
+        stored_active = await repository.get_owned(active_id, user.id)
+        assert stored_completed is not None
+        assert stored_completed.status == "draft" and stored_completed.intake_step == "complete"
+        assert stored_active is not None
+        assert stored_active.status == "draft"
+        assert stored_active.intake_step == "waiting_for_conversation"
+        active_draft = await repository.get_active(user.id)
+        assert active_draft is not None and active_draft.id == active_id

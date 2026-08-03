@@ -115,14 +115,17 @@ class ConversationIntakeService:
         )
 
     async def cancel(self, analysis: Analysis) -> None:
-        if analysis.status != "deleted":
-            await self._analyses.cancel(analysis)
-            await self._analytics.track(str(analysis.user_id), "analysis_cancelled")
+        if analysis.status == "deleted" and analysis.intake_step != "complete":
+            return
+        if analysis.status != "draft" or analysis.intake_step == "complete":
+            raise InvalidTransition("Only an unfinished active draft can be cancelled")
+        await self._analyses.cancel(analysis)
+        await self._analytics.track(str(analysis.user_id), "analysis_cancelled")
 
     async def reset_conversation(self, analysis: Analysis) -> None:
         """Erase submitted context and return an owned unfinished draft to intake start."""
-        if analysis.status == "deleted":
-            return
+        if analysis.status != "draft" or analysis.intake_step == "complete":
+            raise InvalidTransition("Only an unfinished active draft can be reset")
         if (
             analysis.intake_step == "waiting_for_conversation"
             and analysis.normalized_conversation_json is None
