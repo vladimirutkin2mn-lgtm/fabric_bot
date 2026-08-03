@@ -4,6 +4,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -16,8 +17,12 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.db.base import Base
-from app.db.models import User
+from app.db.models import Analysis, User
+from app.providers.analytics import NoOpAnalyticsClient
+from app.repositories.analyses import SqlAlchemyAnalysisRepository
 from app.repositories.users import SqlAlchemyUserRepository
+from app.services.conversation_intake import ConversationIntakeService
+from app.services.conversation_parser import ConversationParser
 
 pytestmark = pytest.mark.postgres
 
@@ -124,3 +129,125 @@ async def test_repeated_get_or_create_updates_telegram_profile(
         "Новое",
         "ru",
     )
+
+
+async def _persist_user(sessions: async_sessionmaker[AsyncSession], telegram_id: int) -> User:
+    async with sessions() as session:
+        user, _ = await SqlAlchemyUserRepository(session).get_or_create(
+            telegram_id, None, "Test", "ru"
+        )
+        return user
+
+
+async def test_analysis_json_relationship_ownership_and_durable_transition(
+    postgres: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres
+    user = await _persist_user(sessions, 200)
+    async with sessions() as session:
+        repository = SqlAlchemyAnalysisRepository(session)
+        analysis, created = await repository.create_or_resume(user.id)
+        analysis.normalized_conversation_json = [
+            {"id": "m1", "speaker": "A", "text": "private", "timestamp": None, "source_order": 1}
+        ]
+        analysis.participants_json = {"A": "Anna", "B": "Ivan"}
+        analysis.message_count = 1
+        analysis.character_count = 7
+        analysis.intake_step = "waiting_for_participant"
+        await repository.save(analysis)
+        analysis_id = analysis.id
+    async with sessions() as session:
+        repository = SqlAlchemyAnalysisRepository(session)
+        stored = await repository.get_owned(analysis_id, user.id)
+        assert created and stored is not None
+        assert stored.normalized_conversation_json is not None
+        assert stored.participants_json == {"A": "Anna", "B": "Ivan"}
+        assert stored.user_id == user.id
+        await session.refresh(stored, ["user"])
+        assert stored.user.id == user.id
+        assert await repository.get_owned(analysis_id, uuid4()) is None
+
+
+async def test_concurrent_analysis_creation_has_one_active_draft(
+    postgres: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres
+    user = await _persist_user(sessions, 201)
+
+    async def create() -> UUID:
+        async with sessions() as session:
+            analysis, _ = await SqlAlchemyAnalysisRepository(session).create_or_resume(user.id)
+            return analysis.id
+
+    ids = await asyncio.gather(*(create() for _ in range(10)))
+    assert len(set(ids)) == 1
+    async with sessions() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(Analysis)
+            .where(
+                Analysis.user_id == user.id,
+                Analysis.status == "draft",
+                Analysis.intake_step != "complete",
+            )
+        )
+    assert count == 1
+
+
+async def test_cancel_and_new_draft_after_completed_intake(
+    postgres: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres
+    user = await _persist_user(sessions, 202)
+    async with sessions() as session:
+        repository = SqlAlchemyAnalysisRepository(session)
+        first, _ = await repository.create_or_resume(user.id)
+        first.intake_step = "complete"
+        await repository.save(first)
+        second, created = await repository.create_or_resume(user.id)
+        assert created and second.id != first.id
+        await repository.cancel(second)
+        assert second.status == "deleted" and await repository.get_active(user.id) is None
+
+
+async def test_analysis_constraints_reject_invalid_status_and_duplicate_active(
+    postgres: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres
+    user = await _persist_user(sessions, 203)
+    async with sessions() as session:
+        session.add(
+            Analysis(user_id=user.id, status="invalid", intake_step="waiting_for_conversation")
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
+    async with sessions() as session:
+        session.add_all(
+            [
+                Analysis(user_id=user.id, intake_step="waiting_for_conversation"),
+                Analysis(user_id=user.id, intake_step="waiting_for_goal"),
+            ]
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
+
+
+async def test_reset_persists_cleared_sensitive_fields(
+    postgres: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres
+    user = await _persist_user(sessions, 204)
+    async with sessions() as session:
+        repository = SqlAlchemyAnalysisRepository(session)
+        service = ConversationIntakeService(repository, ConversationParser(), NoOpAnalyticsClient())
+        draft, _ = await repository.create_or_resume(user.id)
+        await service.submit(draft, "A: one\nB: two\nA: three\nB: four")
+        await service.participant(draft, "A")
+        await service.goal(draft, "Question")
+        await service.reset_conversation(draft)
+        draft_id = draft.id
+    async with sessions() as session:
+        stored = await SqlAlchemyAnalysisRepository(session).get_owned(draft_id, user.id)
+        assert stored is not None and stored.intake_step == "waiting_for_conversation"
+        assert stored.normalized_conversation_json is None and stored.participants_json is None
+        assert stored.user_goal is None and stored.user_participant_label is None

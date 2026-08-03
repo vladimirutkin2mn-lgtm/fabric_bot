@@ -32,6 +32,23 @@ def test_timestamp_and_multiline_formats() -> None:
     assert multiline.source_format == "telegram_multiline"
 
 
+def test_multiline_colon_continuation_blank_lines_and_order_are_preserved() -> None:
+    parsed = ConversationParser(min_messages=2).parse(
+        "Анна, [bad timestamp]\nПривет 😊\nПричина: хочу обсудить завтра\n\n"
+        "Иван, [12.07.2026 18:47]\nХорошо: давай"
+    )
+    assert parsed.participants == {"A": "Анна", "B": "Иван"}
+    assert parsed.messages[0].timestamp is None
+    assert parsed.messages[0].text == "Привет 😊\nПричина: хочу обсудить завтра"
+    assert parsed.messages[1].text == "Хорошо: давай"
+    assert [message.source_order for message in parsed.messages] == [1, 2]
+
+
+def test_duplicate_looking_names_remain_distinct() -> None:
+    parsed = ConversationParser().parse("Анна: 1\nАнна.: 2\nАнна: 3\nАнна.: 4")
+    assert parsed.participants == {"A": "Анна", "B": "Анна."}
+
+
 @pytest.mark.parametrize(
     "content,reason",
     [

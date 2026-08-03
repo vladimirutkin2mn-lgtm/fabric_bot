@@ -5,7 +5,11 @@ from uuid import UUID
 from app.db.models import Analysis, User
 from app.providers.analytics import AnalyticsClient
 from app.repositories.analyses import AnalysisRepository
-from app.services.conversation_parser import ConversationParser, ParsedConversation
+from app.services.conversation_parser import (
+    ConversationParser,
+    ConversationRejected,
+    ParsedConversation,
+)
 
 
 class InvalidTransition(ValueError):
@@ -36,10 +40,22 @@ class ConversationIntakeService:
     async def active(self, user_id: UUID) -> Analysis | None:
         return await self._analyses.get_active(user_id)
 
+    async def owned(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
+        """Return a draft owned by the user, including complete/deleted drafts."""
+        return await self._analyses.get_owned(analysis_id, user_id)
+
     async def submit(self, analysis: Analysis, content: str) -> ParsedConversation:
         if analysis.intake_step != "waiting_for_conversation":
             raise InvalidTransition("Conversation is not expected")
-        parsed = self._parser.parse(content)
+        try:
+            parsed = self._parser.parse(content)
+        except ConversationRejected as error:
+            await self._analytics.track(
+                str(analysis.user_id),
+                "conversation_rejected",
+                {"rejection_reason": error.reason.value},
+            )
+            raise
         analysis.normalized_conversation_json = parsed.message_dicts()
         analysis.participants_json = parsed.participants
         analysis.message_count, analysis.character_count = (
@@ -72,6 +88,8 @@ class ConversationIntakeService:
 
     async def goal(self, analysis: Analysis, goal: str) -> None:
         clean = goal.strip()
+        if analysis.intake_step == "waiting_for_relationship_stage" and analysis.user_goal == clean:
+            return
         if analysis.intake_step != "waiting_for_goal" or not clean or len(clean) > self._goal_limit:
             raise InvalidTransition("Invalid goal")
         analysis.user_goal, analysis.intake_step = clean, "waiting_for_relationship_stage"
@@ -100,3 +118,22 @@ class ConversationIntakeService:
         if analysis.status != "deleted":
             await self._analyses.cancel(analysis)
             await self._analytics.track(str(analysis.user_id), "analysis_cancelled")
+
+    async def reset_conversation(self, analysis: Analysis) -> None:
+        """Erase submitted context and return an owned unfinished draft to intake start."""
+        if analysis.status == "deleted":
+            return
+        if (
+            analysis.intake_step == "waiting_for_conversation"
+            and analysis.normalized_conversation_json is None
+        ):
+            return
+        analysis.normalized_conversation_json = None
+        analysis.participants_json = None
+        analysis.user_participant_label = None
+        analysis.user_goal = None
+        analysis.relationship_stage = None
+        analysis.message_count = 0
+        analysis.character_count = 0
+        analysis.intake_step = "waiting_for_conversation"
+        await self._analyses.save(analysis)

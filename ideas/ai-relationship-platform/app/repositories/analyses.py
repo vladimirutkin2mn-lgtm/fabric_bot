@@ -68,4 +68,9 @@ class SqlAlchemyAnalysisRepository:
         analysis.status = "deleted"
         analysis.normalized_conversation_json = None
         analysis.participants_json = None
+        analysis.user_participant_label = None
+        analysis.user_goal = None
+        analysis.relationship_stage = None
+        analysis.message_count = 0
+        analysis.character_count = 0
         await self.save(analysis)
