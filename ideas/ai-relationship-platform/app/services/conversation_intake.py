@@ -95,7 +95,7 @@ class ConversationIntakeService:
         analysis.user_goal, analysis.intake_step = clean, "waiting_for_relationship_stage"
         await self._analyses.save(analysis)
 
-    async def relationship_stage(self, analysis: Analysis, code: str) -> None:
+    async def relationship_stage(self, analysis: Analysis, code: str) -> Analysis:
         allowed = {
             "new_connection",
             "dating",
@@ -105,7 +105,7 @@ class ConversationIntakeService:
             "not_provided",
         }
         if analysis.intake_step == "complete" and analysis.relationship_stage == code:
-            return
+            return analysis
         if analysis.intake_step != "waiting_for_relationship_stage" or code not in allowed:
             raise InvalidTransition("Invalid relationship stage")
         analysis.relationship_stage, analysis.intake_step = code, "complete"
@@ -113,6 +113,7 @@ class ConversationIntakeService:
         await self._analytics.track(
             str(analysis.user_id), "analysis_context_completed", {"relationship_stage_code": code}
         )
+        return analysis
 
     async def cancel(self, analysis: Analysis) -> None:
         if analysis.status == "deleted" and analysis.intake_step != "complete":

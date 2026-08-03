@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
 from app.logging import configure_logging
 from app.providers.analytics import NoOpAnalyticsClient
+from app.providers.llm.factory import create_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher = Dispatcher()
     engine = create_engine(str(settings.database_url))
     dependency_middleware = OnboardingDependencyMiddleware(
-        create_session_factory(engine), NoOpAnalyticsClient(), settings
+        create_session_factory(engine), NoOpAnalyticsClient(), settings, create_llm_client(settings)
     )
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)

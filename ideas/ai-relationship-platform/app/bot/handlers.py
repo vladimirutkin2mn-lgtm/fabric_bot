@@ -1,5 +1,5 @@
 """Telegram onboarding and conversation intake handlers."""
-# ruff: noqa: RUF001
+# ruff: noqa: RUF001, E501
 
 from uuid import UUID
 
@@ -13,13 +13,18 @@ from app.bot.keyboards import (
     age_keyboard,
     cancel_keyboard,
     consent_keyboard,
+    deletion_keyboard,
     goal_keyboard,
+    history_keyboard,
     main_menu_keyboard,
     participant_keyboard,
     stage_keyboard,
 )
+from app.bot.report_delivery import deliver_report
 from app.bot.states import IntakeStates, OnboardingStates
 from app.db.models import Analysis
+from app.repositories.analyses import DeletionOutcome, FeedbackOutcome, SqlAlchemyAnalysisRepository
+from app.services.analysis_service import AnalysisService, AnalysisServiceStatus
 from app.services.conversation_intake import ConversationIntakeService, InvalidTransition
 from app.services.conversation_parser import ConversationRejected
 from app.services.onboarding import (
@@ -28,6 +33,8 @@ from app.services.onboarding import (
     OnboardingStep,
     TelegramIdentity,
 )
+from app.services.report_renderer import RELATIONSHIP_STAGE_LABELS
+from app.services.report_service import ReportResult, ReportService, ReportStatus
 
 router = Router(name="onboarding")
 
@@ -307,20 +314,48 @@ async def choose_stage(
     state: FSMContext,
     onboarding: OnboardingService,
     intake: ConversationIntakeService,
+    analysis_service: AnalysisService | None = None,
 ) -> None:
     parts = _callback_parts(callback)
     analysis = await _owned(callback, onboarding, intake, parts[2] if len(parts) > 2 else "")
     try:
         if analysis is None:
             raise InvalidTransition("missing")
-        await intake.relationship_stage(analysis, parts[3] if len(parts) > 3 else "")
+        completed = await intake.relationship_stage(analysis, parts[3] if len(parts) > 3 else "")
     except InvalidTransition:
         await callback.answer(texts.STALE_DRAFT, show_alert=True)
         return
     await callback.answer()
     await state.clear()
     if isinstance(callback.message, Message):
-        await callback.message.answer(texts.DRAFT_READY, reply_markup=main_menu_keyboard())
+        if analysis_service is None:
+            await callback.message.answer(texts.DRAFT_READY, reply_markup=main_menu_keyboard())
+            return
+        await callback.message.answer(texts.PROCESSING)
+        outcome = await analysis_service.analyze(completed.id, completed.user_id)
+        if outcome.status is AnalysisServiceStatus.COMPLETED and outcome.result is not None:
+            from app.services.report_renderer import ReportRenderer
+
+            await deliver_report(
+                callback.message, completed.id, ReportRenderer().render(outcome.result)
+            )
+        elif outcome.status is AnalysisServiceStatus.ALREADY_PROCESSING:
+            await callback.message.answer("Этот разбор уже выполняется.")
+        elif outcome.status in {
+            AnalysisServiceStatus.NOT_READY,
+            AnalysisServiceStatus.NOT_FOUND,
+            AnalysisServiceStatus.DELETED,
+        }:
+            await callback.message.answer(
+                "Не хватает данных для запуска. Вернитесь в меню и начните новый разбор."
+            )
+        else:
+            await callback.message.answer(
+                texts.ANALYSIS_FAILURES.get(
+                    outcome.failure_code or "",
+                    "Не удалось завершить разбор из-за технической ошибки. Начните новый разбор позже.",
+                )
+            )
 
 
 @router.callback_query(F.data.startswith("intake:cancel:"))
@@ -378,8 +413,206 @@ async def return_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(texts.MAIN_MENU, reply_markup=main_menu_keyboard())
 
 
-@router.callback_query(F.data.in_({"menu:history", "menu:balance", "menu:privacy"}))
+@router.callback_query(F.data.in_({"menu:balance", "menu:privacy"}))
 async def placeholder(callback: CallbackQuery) -> None:
     await callback.answer()
     if isinstance(callback.message, Message):
         await callback.message.answer(texts.COMING_LATER)
+
+
+async def _report_user(callback: CallbackQuery, onboarding: OnboardingService) -> object | None:
+    return await onboarding.current_user(callback.from_user.id)
+
+
+async def _show_history(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService, page: int
+) -> None:
+    user = await onboarding.current_user(callback.from_user.id)
+    await callback.answer()
+    if user is None or not isinstance(callback.message, Message):
+        return
+    items, has_next = await reports.repository.list_completed(user.id, page)
+    labels = [
+        (
+            item.id,
+            f"{item.completed_at:%d.%m.%Y} · {RELATIONSHIP_STAGE_LABELS.get(item.relationship_stage or '', 'Стадия не указана')}",
+        )
+        for item in items
+    ]
+    text = "Завершённых разборов пока нет." if not items else "Ваши завершённые разборы:"
+    await callback.message.answer(text, reply_markup=history_keyboard(labels, page, has_next))
+
+
+@router.callback_query(F.data == "menu:history")
+async def history(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    await _show_history(callback, onboarding, reports, 0)
+
+
+@router.callback_query(F.data.startswith("history:page:"))
+async def history_page(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    try:
+        page = max(0, int(_callback_parts(callback)[2]))
+    except (ValueError, IndexError):
+        page = 0
+    await _show_history(callback, onboarding, reports, page)
+
+
+async def _load_report(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> ReportResult | None:
+    user = await onboarding.current_user(callback.from_user.id)
+    try:
+        analysis_id = UUID(_callback_parts(callback)[-1])
+    except (ValueError, IndexError):
+        return None
+    return None if user is None else await reports.retrieve(analysis_id, user.id)
+
+
+@router.callback_query(F.data.startswith("history:open:"))
+async def open_history(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    loaded = await _load_report(callback, onboarding, reports)
+    await callback.answer()
+    if not isinstance(callback.message, Message):
+        return
+    if loaded and loaded.status is ReportStatus.COMPLETED and loaded.report and loaded.analysis:
+        await deliver_report(
+            callback.message,
+            loaded.analysis.id,
+            loaded.report,
+            feedback_exists=loaded.analysis.feedback_score is not None,
+        )
+    else:
+        await callback.message.answer(
+            texts.REPORT_CORRUPTED
+            if loaded and loaded.status is ReportStatus.CORRUPTED_RESULT
+            else texts.REPORT_UNAVAILABLE
+        )
+
+
+@router.callback_query(F.data.startswith("report:replies:"))
+async def replies(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    loaded = await _load_report(callback, onboarding, reports)
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.result:
+            values = loaded.result.reply_suggestions
+            await callback.message.answer(
+                "\n\n".join(
+                    f"{i}. {item.text}\nПочему подходит: {item.why_it_fits}"
+                    for i, item in enumerate(values, 1)
+                )
+                or "В сохранённом отчёте нет вариантов ответа."
+            )
+        else:
+            await callback.message.answer(texts.REPORT_UNAVAILABLE)
+
+
+@router.callback_query(F.data.startswith("report:followup:"))
+async def followup(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(texts.FOLLOWUP_UNAVAILABLE)
+
+
+@router.callback_query(F.data.startswith("report:new_fragment:"))
+async def new_fragment(
+    callback: CallbackQuery,
+    state: FSMContext,
+    onboarding: OnboardingService,
+    intake: ConversationIntakeService,
+    reports: ReportService,
+) -> None:
+    loaded = await _load_report(callback, onboarding, reports)
+    await callback.answer()
+    if not isinstance(callback.message, Message):
+        return
+    user = await onboarding.current_user(callback.from_user.id)
+    if loaded is None or loaded.status is not ReportStatus.COMPLETED or user is None:
+        await callback.message.answer(texts.REPORT_UNAVAILABLE)
+        return
+    fresh = await intake.start(user)
+    await show_intake_step(callback.message, state, fresh)
+
+
+@router.callback_query(F.data.startswith("report:delete_prompt:"))
+async def delete_prompt(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            "Удалить этот разбор и его содержимое?",
+            reply_markup=deletion_keyboard(_callback_parts(callback)[-1]),
+        )
+
+
+@router.callback_query(F.data.startswith("report:delete_cancel:"))
+async def delete_cancel(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer("Удаление отменено.")
+
+
+@router.callback_query(F.data.startswith("report:delete_confirm:"))
+async def delete_confirm(
+    callback: CallbackQuery,
+    onboarding: OnboardingService,
+    analysis_repository: SqlAlchemyAnalysisRepository,
+) -> None:
+    user = await onboarding.current_user(callback.from_user.id)
+    try:
+        analysis_id = UUID(_callback_parts(callback)[-1])
+    except (ValueError, IndexError):
+        analysis_id = None
+    outcome = (
+        DeletionOutcome.NOT_FOUND
+        if user is None or analysis_id is None
+        else await analysis_repository.delete_owned(analysis_id, user.id)
+    )
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            "Разбор удалён."
+            if outcome is DeletionOutcome.DELETED
+            else "Разбор уже удалён или недоступен.",
+            reply_markup=main_menu_keyboard(),
+        )
+
+
+@router.callback_query(F.data.startswith("feedback:"))
+async def feedback(
+    callback: CallbackQuery,
+    onboarding: OnboardingService,
+    analysis_repository: SqlAlchemyAnalysisRepository,
+) -> None:
+    user = await onboarding.current_user(callback.from_user.id)
+    parts = _callback_parts(callback)
+    try:
+        analysis_id, score = UUID(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        analysis_id, score = None, 0
+    outcome = (
+        FeedbackOutcome.NOT_FOUND
+        if user is None or analysis_id is None
+        else await analysis_repository.record_feedback(analysis_id, user.id, score)
+    )
+    await callback.answer(
+        "Спасибо за оценку."
+        if outcome in {FeedbackOutcome.RECORDED, FeedbackOutcome.ALREADY_RECORDED}
+        else "Не удалось сохранить оценку.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data == "report:menu")
+async def report_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(texts.MAIN_MENU, reply_markup=main_menu_keyboard())
