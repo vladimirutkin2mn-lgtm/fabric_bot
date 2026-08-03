@@ -238,7 +238,12 @@ class PaymentOrder(Base):
     billing_period: Mapped[str | None] = mapped_column(String(32))
     provider_invoice_id: Mapped[str | None] = mapped_column(String(255))
     subscription_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("subscriptions.id", ondelete="RESTRICT", use_alter=True)
+        ForeignKey(
+            "subscriptions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_payment_orders_subscription",
+        )
     )
     provider_status: Mapped[str | None] = mapped_column(String(64))
     idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
@@ -282,6 +287,11 @@ class CreditTransaction(Base):
             "type <> 'refund' OR reverses_transaction_id IS NOT NULL",
             name="ck_credit_transactions_refund_reversal",
         ),
+        CheckConstraint(
+            "type <> 'purchase_refund' OR (original_purchase_transaction_id IS NOT NULL "
+            "AND payment_order_id IS NOT NULL AND refund_request_id IS NOT NULL)",
+            name="ck_credit_transactions_purchase_refund_refs",
+        ),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
@@ -301,7 +311,13 @@ class CreditTransaction(Base):
         ForeignKey("credit_transactions.id", ondelete="RESTRICT")
     )
     refund_request_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("refund_requests.id", ondelete="RESTRICT", use_alter=True), unique=True
+        ForeignKey(
+            "refund_requests.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_credit_transactions_refund_request",
+        ),
+        unique=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -359,7 +375,12 @@ class Subscription(Base):
     renewal_claimed_by: Mapped[str | None] = mapped_column(String(255))
     renewal_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_order_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("payment_orders.id", ondelete="RESTRICT", use_alter=True)
+        ForeignKey(
+            "payment_orders.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_subscriptions_last_order",
+        )
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
