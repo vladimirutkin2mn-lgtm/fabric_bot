@@ -75,6 +75,17 @@ class SupersedingProvider(BlockingProvider):
         return Checkout("mock", f"mock-{request.order_id}", f"http://pay/{suffix}")
 
 
+class SupersededErrorProvider(SupersedingProvider):
+    async def create_checkout(self, request: CheckoutRequest) -> Checkout:
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            await self.release.wait()
+            raise RuntimeError("old provider attempt failed")
+        self.second_finished.set()
+        return Checkout("mock", f"mock-{request.order_id}", "http://pay/winner")
+
+
 async def _user(sessions: async_sessionmaker[AsyncSession]) -> User:
     async with sessions.begin() as session:
         user = User(telegram_user_id=uuid4().int % 10**12, first_name="Fictional")
@@ -197,3 +208,46 @@ async def test_duplicate_payment_and_event_ids_are_typed_mismatch(
         currency,
     )
     assert await service.complete(duplicate_event) is PaymentCompletionOutcome.PAYMENT_MISMATCH
+
+
+async def test_old_cancellation_cannot_fail_winning_attempt(
+    payment_db: async_sessionmaker[AsyncSession], settings: Settings
+) -> None:
+    user = await _user(payment_db)
+    provider, analytics = SupersedingProvider(), Analytics()
+    service = PaymentService(
+        payment_db, ProductCatalog(settings), provider, analytics, creation_lease_seconds=-1
+    )
+    old = asyncio.create_task(service.create_checkout(user.id, "analysis_single"))
+    await provider.started.wait()
+    winner = await service.create_checkout(user.id, "analysis_single")
+    assert winner.outcome is CheckoutOutcome.EXISTING
+    old.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await old
+    async with payment_db() as session:
+        order = await session.scalar(select(PaymentOrder))
+        assert order is not None and order.status == "pending"
+        assert order.checkout_url == "http://pay/winner"
+    assert analytics.events == ["checkout_started"]
+
+
+async def test_old_provider_error_cannot_fail_winning_attempt(
+    payment_db: async_sessionmaker[AsyncSession], settings: Settings
+) -> None:
+    user = await _user(payment_db)
+    provider, analytics = SupersededErrorProvider(), Analytics()
+    service = PaymentService(
+        payment_db, ProductCatalog(settings), provider, analytics, creation_lease_seconds=-1
+    )
+    old = asyncio.create_task(service.create_checkout(user.id, "analysis_single"))
+    await provider.started.wait()
+    winner = await service.create_checkout(user.id, "analysis_single")
+    assert winner.outcome is CheckoutOutcome.EXISTING
+    provider.release.set()
+    assert (await old).outcome is CheckoutOutcome.PROVIDER_FAILED
+    async with payment_db() as session:
+        order = await session.scalar(select(PaymentOrder))
+        assert order is not None and order.status == "pending"
+        assert order.checkout_url == "http://pay/winner"
+    assert analytics.events == ["checkout_started"]
