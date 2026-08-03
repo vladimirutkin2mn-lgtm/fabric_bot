@@ -83,7 +83,7 @@ class PreviewEntitlementService:
         return await self._transition(user_id, analysis_id, consume=True)
 
     async def finalize_preview(self, user_id: UUID, analysis_id: UUID) -> PreviewOutcome:
-        """Atomically consume the entitlement and grant preview report access."""
+        """Consume the entitlement without ever downgrading durable report access."""
         async with self._sessions.begin() as session:
             user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             if user is None:
@@ -102,9 +102,12 @@ class PreviewEntitlementService:
                 or user.free_preview_analysis_id != analysis_id
             ):
                 return PreviewOutcome.UNAVAILABLE
-            analysis.report_access = "preview"
-            analysis.cost_units = 0
-            analysis.full_access_transaction_id = None
+
+            if analysis.report_access != "full":
+                analysis.report_access = "preview"
+                analysis.cost_units = 0
+                analysis.full_access_transaction_id = None
+
             user.free_preview_status = "consumed"
             user.free_preview_used_at = datetime.now(UTC)
             await session.flush()
