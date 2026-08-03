@@ -10,7 +10,6 @@ from openai.types.responses import (
     ResponseInputParam,
     ResponseTextConfigParam,
 )
-from openai.types.shared_params import ResponseFormatTextJSONSchemaConfigParam
 
 from app.providers.llm.base import (
     LLMAuthenticationError,
@@ -94,13 +93,14 @@ class OpenAILLMClient:
                 }
                 input_messages: ResponseInputParam = [system_message, user_message]
                 converted_schema = cast(dict[str, object], openai_strict_schema(request.schema))
-                response_format: ResponseFormatTextJSONSchemaConfigParam = {
-                    "type": "json_schema",
-                    "name": "analysis_result",
-                    "strict": True,
-                    "schema": converted_schema,
+                text_config: ResponseTextConfigParam = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "analysis_result",
+                        "strict": True,
+                        "schema": converted_schema,
+                    }
                 }
-                text_config: ResponseTextConfigParam = {"format": response_format}
                 response = await self._client.responses.create(
                     model=self._model,
                     input=input_messages,
