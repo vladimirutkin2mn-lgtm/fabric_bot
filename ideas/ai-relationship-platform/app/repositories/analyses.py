@@ -87,11 +87,12 @@ class SqlAlchemyAnalysisRepository:
         return cast(
             Analysis | None,
             await self._session.scalar(
-                select(Analysis).where(
+                select(Analysis)
+                .where(
                     Analysis.user_id == user_id,
                     Analysis.status == "draft",
-                    Analysis.intake_step != "complete",
                 )
+                .order_by(Analysis.created_at.desc())
             ),
         )
 
@@ -191,6 +192,7 @@ class SqlAlchemyAnalysisRepository:
                 )
                 .values(
                     status="deleted",
+                    report_access="none",
                     normalized_conversation_json=None,
                     participants_json=None,
                     user_participant_label=None,
@@ -228,6 +230,7 @@ class SqlAlchemyAnalysisRepository:
 
     async def cancel(self, analysis: Analysis) -> None:
         analysis.status = "deleted"
+        analysis.report_access = "none"
         analysis.normalized_conversation_json = None
         analysis.participants_json = None
         analysis.user_participant_label = None

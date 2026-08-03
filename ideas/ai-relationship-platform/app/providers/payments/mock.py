@@ -5,7 +5,6 @@ import hmac
 import json
 import time
 from collections.abc import Mapping
-from typing import Any
 
 from app.providers.payments.base import (
     Checkout,
@@ -49,22 +48,48 @@ class MockPaymentProvider:
         if abs(int(time.time()) - timestamp) > self._max_age:
             raise PaymentExpiredEventError
         try:
-            value: Any = json.loads(payload)
+            value = json.loads(payload)
+            if not isinstance(value, dict):
+                raise PaymentPayloadError
+            required = (
+                "event_id",
+                "checkout_id",
+                "payment_id",
+                "status",
+                "amount_minor",
+                "currency",
+            )
+            if any(key not in value for key in required):
+                raise PaymentPayloadError
+            identifiers = (value["event_id"], value["checkout_id"], value["payment_id"])
+            if any(
+                not isinstance(item, str) or not item or len(item) > 255 for item in identifiers
+            ):
+                raise PaymentPayloadError
+            amount = value["amount_minor"]
+            currency = value["currency"]
+            status = value["status"]
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+                raise PaymentPayloadError
+            if (
+                not isinstance(currency, str)
+                or len(currency) != 3
+                or not currency.isascii()
+                or not currency.isalpha()
+                or not currency.isupper()
+            ):
+                raise PaymentPayloadError
+            if status not in {"paid", "failed"}:
+                raise PaymentPayloadError
             event = PaymentEvent(
                 provider="mock",
-                event_id=str(value["event_id"]),
-                checkout_id=str(value["checkout_id"]),
-                payment_id=str(value["payment_id"]),
-                status=str(value["status"]),
-                amount_minor=int(value["amount_minor"]),
-                currency=str(value["currency"]),
+                event_id=value["event_id"],
+                checkout_id=value["checkout_id"],
+                payment_id=value["payment_id"],
+                status=status,
+                amount_minor=amount,
+                currency=currency,
             )
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise PaymentPayloadError from exc
-        if (
-            event.status not in {"paid", "failed"}
-            or event.amount_minor <= 0
-            or len(event.currency) != 3
-        ):
-            raise PaymentPayloadError
         return event

@@ -8,15 +8,19 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import User
+from app.db.models import Analysis, User
 
 
 class PreviewOutcome(StrEnum):
     RESERVED = "reserved"
     ALREADY_RESERVED_SAME_ANALYSIS = "already_reserved_same_analysis"
     ALREADY_CONSUMED_SAME_ANALYSIS = "already_consumed_same_analysis"
+    CONSUMED = "consumed"
+    RELEASED = "released"
     UNAVAILABLE = "unavailable"
-    NOT_FOUND = "not_found"
+    ANALYSIS_NOT_FOUND = "analysis_not_found"
+    USER_NOT_FOUND = "user_not_found"
+    NOT_READY = "not_ready"
 
 
 @dataclass(frozen=True)
@@ -42,7 +46,14 @@ class PreviewEntitlementService:
         async with self._sessions.begin() as session:
             user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             if user is None:
-                return PreviewOutcome.NOT_FOUND
+                return PreviewOutcome.USER_NOT_FOUND
+            analysis = await session.scalar(
+                select(Analysis).where(Analysis.id == analysis_id, Analysis.user_id == user_id)
+            )
+            if analysis is None:
+                return PreviewOutcome.ANALYSIS_NOT_FOUND
+            if analysis.status != "draft" or analysis.intake_step != "complete":
+                return PreviewOutcome.NOT_READY
             if user.free_preview_analysis_id == analysis_id:
                 return (
                     PreviewOutcome.ALREADY_CONSUMED_SAME_ANALYSIS
@@ -66,7 +77,7 @@ class PreviewEntitlementService:
         async with self._sessions.begin() as session:
             user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             if user is None:
-                return PreviewOutcome.NOT_FOUND
+                return PreviewOutcome.USER_NOT_FOUND
             if (
                 user.free_preview_analysis_id != analysis_id
                 or user.free_preview_status != "reserved"
@@ -74,6 +85,8 @@ class PreviewEntitlementService:
                 return PreviewOutcome.UNAVAILABLE
             if consume:
                 user.free_preview_status, user.free_preview_used_at = "consumed", datetime.now(UTC)
+                return PreviewOutcome.CONSUMED
             else:
                 user.free_preview_status, user.free_preview_analysis_id = "available", None
-            return PreviewOutcome.RESERVED
+                user.free_preview_used_at = None
+                return PreviewOutcome.RELEASED

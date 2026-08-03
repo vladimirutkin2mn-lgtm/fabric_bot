@@ -28,6 +28,8 @@ class RefundOutcome(StrEnum):
 class GrantOutcome(StrEnum):
     GRANTED = "granted"
     ALREADY_GRANTED = "already_granted"
+    USER_NOT_FOUND = "user_not_found"
+    INVALID_AMOUNT = "invalid_amount"
 
 
 @dataclass(frozen=True)
@@ -130,9 +132,13 @@ class CreditsService:
 
     async def grant(self, user_id: UUID, amount: int, key: str) -> GrantOutcome:
         if amount < 1:
-            raise ValueError("grant amount must be positive")
+            return GrantOutcome.INVALID_AMOUNT
         async with self._sessions.begin() as session:
-            await session.scalar(select(User.id).where(User.id == user_id).with_for_update())
+            if (
+                await session.scalar(select(User.id).where(User.id == user_id).with_for_update())
+                is None
+            ):
+                return GrantOutcome.USER_NOT_FOUND
             if (
                 await session.scalar(
                     select(CreditTransaction.id).where(CreditTransaction.idempotency_key == key)
@@ -142,5 +148,38 @@ class CreditsService:
                 return GrantOutcome.ALREADY_GRANTED
             session.add(
                 CreditTransaction(user_id=user_id, type="grant", amount=amount, idempotency_key=key)
+            )
+            return GrantOutcome.GRANTED
+
+    async def adjustment(self, user_id: UUID, amount: int, key: str) -> GrantOutcome:
+        if amount == 0:
+            return GrantOutcome.INVALID_AMOUNT
+        async with self._sessions.begin() as session:
+            if (
+                await session.scalar(select(User.id).where(User.id == user_id).with_for_update())
+                is None
+            ):
+                return GrantOutcome.USER_NOT_FOUND
+            if (
+                await session.scalar(
+                    select(CreditTransaction.id).where(CreditTransaction.idempotency_key == key)
+                )
+                is not None
+            ):
+                return GrantOutcome.ALREADY_GRANTED
+            balance = int(
+                await session.scalar(
+                    select(func.coalesce(func.sum(CreditTransaction.amount), 0)).where(
+                        CreditTransaction.user_id == user_id
+                    )
+                )
+                or 0
+            )
+            if balance + amount < 0:
+                return GrantOutcome.INVALID_AMOUNT
+            session.add(
+                CreditTransaction(
+                    user_id=user_id, type="adjustment", amount=amount, idempotency_key=key
+                )
             )
             return GrantOutcome.GRANTED

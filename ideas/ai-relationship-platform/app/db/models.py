@@ -80,6 +80,20 @@ class Analysis(Base):
         ),
         CheckConstraint("cost_units >= 0", name="ck_analyses_cost_units"),
         CheckConstraint(
+            "(report_access = 'none') OR "
+            "(report_access = 'preview' AND status = 'completed' AND cost_units = 0) OR "
+            "(report_access = 'full' AND status = 'completed')",
+            name="ck_analyses_access_state",
+        ),
+        CheckConstraint(
+            "cost_units = 0 OR full_access_transaction_id IS NOT NULL",
+            name="ck_analyses_paid_access_transaction",
+        ),
+        CheckConstraint(
+            "status <> 'deleted' OR report_access = 'none'",
+            name="ck_analyses_deleted_access",
+        ),
+        CheckConstraint(
             "intake_step IN ('waiting_for_conversation','waiting_for_participant',"
             "'waiting_for_goal','waiting_for_relationship_stage','complete')",
             name="ck_analyses_intake_step",

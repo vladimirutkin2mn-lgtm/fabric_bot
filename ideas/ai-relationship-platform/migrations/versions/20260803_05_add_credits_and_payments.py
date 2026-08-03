@@ -45,6 +45,19 @@ def upgrade() -> None:
         "ck_analyses_report_access", "analyses", "report_access IN ('none','preview','full')"
     )
     op.create_check_constraint("ck_analyses_cost_units", "analyses", "cost_units >= 0")
+    op.create_check_constraint(
+        "ck_analyses_access_state",
+        "analyses",
+        "(report_access = 'none') OR (report_access = 'preview' AND status = 'completed' AND cost_units = 0) OR (report_access = 'full' AND status = 'completed')",
+    )
+    op.create_check_constraint(
+        "ck_analyses_paid_access_transaction",
+        "analyses",
+        "cost_units = 0 OR full_access_transaction_id IS NOT NULL",
+    )
+    op.create_check_constraint(
+        "ck_analyses_deleted_access", "analyses", "status <> 'deleted' OR report_access = 'none'"
+    )
     op.create_table(
         "payment_orders",
         sa.Column("id", postgresql.UUID(), primary_key=True),
@@ -168,6 +181,9 @@ def downgrade() -> None:
     op.drop_table("credit_transactions")
     op.drop_index("uq_payment_orders_active", table_name="payment_orders")
     op.drop_table("payment_orders")
+    op.drop_constraint("ck_analyses_deleted_access", "analyses", type_="check")
+    op.drop_constraint("ck_analyses_paid_access_transaction", "analyses", type_="check")
+    op.drop_constraint("ck_analyses_access_state", "analyses", type_="check")
     op.drop_constraint("ck_analyses_cost_units", "analyses", type_="check")
     op.drop_constraint("ck_analyses_report_access", "analyses", type_="check")
     op.drop_column("analyses", "full_access_transaction_id")
