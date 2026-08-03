@@ -53,9 +53,7 @@ async def _draft(
         return user.id, analysis.id
 
 
-async def _complete(
-    sessions: async_sessionmaker[AsyncSession], analysis_id: UUID
-) -> None:
+async def _complete(sessions: async_sessionmaker[AsyncSession], analysis_id: UUID) -> None:
     async with sessions.begin() as session:
         analysis = await session.get(Analysis, analysis_id)
         assert analysis is not None
