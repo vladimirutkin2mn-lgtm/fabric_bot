@@ -28,3 +28,11 @@ The `billing-worker` Compose service runs leased webhook/reconciliation jobs, pe
 sweeps stale `creating` and `pending` orders, and delivers transactional outbox events.
 It polls at most once per second while idle and handles SIGTERM/SIGINT gracefully. The
 checkout kill switch is intentionally not consulted by this recovery process.
+
+## Analytics outbox policy
+
+`ANALYTICS_ENABLED=false` is explicit: the billing worker intentionally discards
+non-financial analytics events through a logging sink and records the discard without
+customer data. Delivery properties include the outbox event ID and idempotency key for
+future at-least-once sinks. Production startup fails closed if analytics is enabled while
+no delivery client is configured; it never silently treats a no-op client as delivery.

@@ -11,3 +11,7 @@ class OnboardingStates(StatesGroup):
 class IntakeStates(StatesGroup):
     waiting_for_conversation = State()
     waiting_for_goal = State()
+
+
+class PaymentStates(StatesGroup):
+    waiting_for_receipt_contact = State()

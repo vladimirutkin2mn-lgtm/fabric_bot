@@ -53,8 +53,12 @@ class BillingOutboxWorker:
                 event.event_type,
                 event.payload,
             )
+            idempotency_key = event.idempotency_key
         try:
-            await self._analytics.track(aggregate, kind, {k: str(v) for k, v in payload.items()})
+            properties = {k: str(v) for k, v in payload.items()}
+            properties["outbox_idempotency_key"] = idempotency_key
+            properties["outbox_event_id"] = str(event_id)
+            await self._analytics.track(aggregate, kind, properties)
         except Exception:
             async with self._sessions.begin() as session:
                 event = await session.get(BillingOutboxEvent, event_id, with_for_update=True)

@@ -31,6 +31,10 @@ def stripe_values() -> dict[str, object]:
         "stripe_price_analysis_single_usd": "price_usd_1",
         "stripe_price_analysis_pack_5_eur": "price_eur_5",
         "stripe_price_analysis_pack_5_usd": "price_usd_5",
+        "stripe_amount_analysis_single_eur_minor": 411,
+        "stripe_amount_analysis_single_usd_minor": 577,
+        "stripe_amount_analysis_pack_5_eur_minor": 1800,
+        "stripe_amount_analysis_pack_5_usd_minor": 2200,
     }
 
 
@@ -38,7 +42,12 @@ def stripe_values() -> dict[str, object]:
 def test_production_composition_starts_without_mock(kind: str) -> None:
     values: dict[str, object] = {}
     if kind in {"yookassa", "both"}:
-        values.update(yookassa_enabled=True, yookassa_shop_id="shop", yookassa_secret_key="secret")
+        values.update(
+            yookassa_enabled=True,
+            yookassa_shop_id="shop",
+            yookassa_secret_key="secret",
+            yookassa_webhook_ip_allowlist="185.71.76.0/27",
+        )
     if kind in {"stripe", "both"}:
         values.update(stripe_values())
     settings = production(**values)
@@ -60,3 +69,32 @@ def test_enabled_stripe_requires_all_one_time_prices() -> None:
     values["stripe_price_analysis_pack_5_usd"] = ""
     with pytest.raises(ValidationError):
         production(**values)
+
+
+def test_enabled_stripe_requires_explicit_expected_amounts() -> None:
+    values = stripe_values()
+    values["stripe_amount_analysis_pack_5_usd_minor"] = None
+    with pytest.raises(ValidationError):
+        production(**values)
+
+
+@pytest.mark.parametrize("allowlist", ["", "not-a-network", "10.0.0.0/999"])
+def test_yookassa_requires_valid_webhook_networks(allowlist: str) -> None:
+    with pytest.raises(ValidationError):
+        production(
+            yookassa_enabled=True,
+            yookassa_shop_id="shop",
+            yookassa_secret_key="secret",
+            yookassa_webhook_ip_allowlist=allowlist,
+        )
+
+
+def test_yookassa_accepts_ipv4_ipv6_and_trusted_proxy_networks() -> None:
+    settings = production(
+        yookassa_enabled=True,
+        yookassa_shop_id="shop",
+        yookassa_secret_key="secret",
+        yookassa_webhook_ip_allowlist="185.71.76.0/27,2a02:5180::/32",
+        yookassa_trusted_proxy_allowlist="10.0.0.0/8,2001:db8::/32",
+    )
+    assert settings.yookassa_enabled

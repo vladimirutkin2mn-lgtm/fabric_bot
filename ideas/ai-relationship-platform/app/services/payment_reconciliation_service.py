@@ -9,9 +9,15 @@ from app.db.models import BillingJob, PaymentOrder
 
 
 class PaymentReconciliationSweeper:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], stale_seconds: int) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        stale_seconds: int,
+        supported_providers: set[str] | None = None,
+    ) -> None:
         self._sessions = sessions
         self._stale = stale_seconds
+        self._supported = supported_providers or {"stripe", "yookassa"}
 
     async def enqueue_stale(self, limit: int = 100) -> int:
         now = datetime.now(UTC)
@@ -23,6 +29,7 @@ class PaymentReconciliationSweeper:
                     select(PaymentOrder)
                     .where(
                         PaymentOrder.status.in_(("creating", "pending")),
+                        PaymentOrder.provider.in_(self._supported),
                         PaymentOrder.updated_at <= cutoff,
                         or_(
                             PaymentOrder.last_reconciled_at.is_(None),

@@ -20,13 +20,39 @@ class PaymentCompletionService:
     async def complete(self, order_id: UUID, payment: AuthoritativePayment) -> str:
         try:
             return await self._complete(order_id, payment)
-        except IntegrityError:
-            async with self._sessions() as session:
-                order = await session.get(PaymentOrder, order_id)
-                if order and order.status == "completed":
-                    return "already_completed"
-                if order and order.status in {"failed", "cancelled", "manual_review"}:
-                    return f"already_{order.status}"
+        except IntegrityError as exc:
+            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            if constraint not in {
+                "payment_orders_provider_payment_id_key",
+                "credit_transactions_external_payment_id_key",
+                "credit_transactions_payment_order_id_key",
+                "credit_transactions_idempotency_key_key",
+                "billing_outbox_events_idempotency_key_key",
+            }:
+                raise
+            return await self._resolve_identity_conflict(order_id, payment.payment_id)
+
+    async def _resolve_identity_conflict(self, order_id: UUID, payment_id: str) -> str:
+        async with self._sessions.begin() as session:
+            initial = await session.get(PaymentOrder, order_id)
+            if initial is None:
+                return "order_not_found"
+            await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
+            order = await session.get(PaymentOrder, order_id, with_for_update=True)
+            assert order is not None
+            if order.status == "completed" and order.provider_payment_id == payment_id:
+                return "already_completed"
+            owner = await session.scalar(
+                select(PaymentOrder.id).where(
+                    PaymentOrder.provider_payment_id == payment_id,
+                    PaymentOrder.id != order.id,
+                )
+            )
+            if owner is not None:
+                order.status = "manual_review"
+                order.failure_code = "payment_identity_reused"
+                order.encrypted_receipt_contact = None
+                return "manual_review"
             return "identity_conflict"
 
     async def _complete(self, order_id: UUID, payment: AuthoritativePayment) -> str:
@@ -51,6 +77,11 @@ class PaymentCompletionService:
                 order.encrypted_receipt_contact = None
                 return "manual_review"
             if not payment.paid or payment.status != "succeeded":
+                if payment.status == "waiting_for_capture":
+                    order.status = "manual_review"
+                    order.failure_code = "unexpected_waiting_for_capture"
+                    order.encrypted_receipt_contact = None
+                    return "manual_review"
                 if payment.status in {"failed", "canceled", "cancelled", "expired"}:
                     order.status, order.failure_code = "failed", f"provider_{payment.status}"
                     order.encrypted_receipt_contact = None

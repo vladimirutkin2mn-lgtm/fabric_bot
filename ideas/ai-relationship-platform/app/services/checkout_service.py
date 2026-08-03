@@ -21,6 +21,7 @@ from app.providers.payments.base import (
     UnknownProviderOutcome,
 )
 from app.providers.payments.gateway import CreateCheckout, HostedCheckout, OneTimePaymentGateway
+from app.services.receipt_contact import InvalidReceiptContact, validate_receipt_contact
 
 
 class CheckoutRejected(Exception):
@@ -107,8 +108,12 @@ class CheckoutService:
             offer.provider is PaymentProviderName.YOOKASSA
             and self._settings.yookassa_receipts_required
         ):
-            if not receipt_contact or not self._valid_contact(receipt_contact):
-                raise CheckoutRejected("valid receipt contact required")
+            try:
+                if not receipt_contact:
+                    raise InvalidReceiptContact
+                validate_receipt_contact(receipt_contact)
+            except InvalidReceiptContact:
+                raise CheckoutRejected("valid receipt contact required") from None
         attempt = uuid4()
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
@@ -264,9 +269,3 @@ class CheckoutService:
                     idempotency_key=f"payment_failed:{order.id}",
                 )
             )
-
-    @staticmethod
-    def _valid_contact(value: str) -> bool:
-        return ("@" in value and 3 <= len(value) <= 254) or (
-            value.startswith("+") and value[1:].isdigit() and 8 <= len(value) <= 16
-        )

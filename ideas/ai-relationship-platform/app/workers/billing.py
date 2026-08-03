@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
 from app.logging import configure_logging
-from app.providers.analytics import NoOpAnalyticsClient
+from app.providers.analytics import DiscardingAnalyticsClient
 from app.providers.payments.composition import create_payment_components
 from app.services.billing_job_worker import BillingJobWorker
 from app.services.billing_outbox_service import BillingOutboxWorker
@@ -40,13 +40,13 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
     )
     outbox = BillingOutboxWorker(
         sessions,
-        NoOpAnalyticsClient(),
+        DiscardingAnalyticsClient(),
         resolved.billing_worker_lease_seconds,
         resolved.billing_retry_base_seconds,
         resolved.billing_worker_max_attempts,
     )
     sweeper = PaymentReconciliationSweeper(
-        sessions, resolved.billing_pending_reconciliation_seconds
+        sessions, resolved.billing_pending_reconciliation_seconds, set(gateways)
     )
     stopped = stop or asyncio.Event()
     worker_id = f"{socket.gethostname()}:{id(stopped)}"
@@ -63,8 +63,14 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
                 next_sweep = now + timedelta(
                     seconds=resolved.billing_reconciliation_interval_seconds
                 )
-            worked = await jobs.run_once(worker_id)
-            worked = await outbox.run_once(worker_id) or worked
+            try:
+                worked = await jobs.run_once(worker_id)
+                worked = await outbox.run_once(worker_id) or worked
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("billing_worker_iteration_failed")
+                worked = False
             if not worked:
                 try:
                     await asyncio.wait_for(stopped.wait(), timeout=1.0)

@@ -27,10 +27,11 @@ from app.bot.keyboards import (
     paywall_keyboard,
     preview_actions_keyboard,
     products_keyboard,
+    receipt_contact_keyboard,
     stage_keyboard,
 )
 from app.bot.report_delivery import deliver_report
-from app.bot.states import IntakeStates, OnboardingStates
+from app.bot.states import IntakeStates, OnboardingStates, PaymentStates
 from app.config import Settings
 from app.db.models import Analysis
 from app.domain.products import ProductCatalog
@@ -48,6 +49,7 @@ from app.services.onboarding import (
 )
 from app.services.payment_service import CheckoutOutcome, PaymentService
 from app.services.preview_entitlement import PreviewEntitlementService
+from app.services.receipt_contact import InvalidReceiptContact, validate_receipt_contact
 from app.services.report_renderer import RELATIONSHIP_STAGE_LABELS
 from app.services.report_service import ReportResult, ReportService, ReportStatus
 
@@ -511,8 +513,10 @@ async def buy_credits(
 @router.callback_query(F.data.startswith("credits:offer:"))
 async def create_production_checkout(
     callback: CallbackQuery,
+    state: FSMContext,
     onboarding: OnboardingService,
     checkout: CheckoutService,
+    billing_settings: Settings,
 ) -> None:
     await callback.answer()
     user = await onboarding.current_user(callback.from_user.id)
@@ -523,6 +527,14 @@ async def create_production_checkout(
         await callback.message.answer("Этот вариант оплаты недоступен.")
         return
     _, _, product_code, market, currency = parts
+    if billing_settings.yookassa_receipts_required and market == "RU" and currency == "RUB":
+        await state.set_state(PaymentStates.waiting_for_receipt_contact)
+        await state.set_data({"product_code": product_code, "market": market, "currency": currency})
+        await callback.message.answer(
+            "Отправьте email или телефон в международном формате для кассового чека.",
+            reply_markup=receipt_contact_keyboard(),
+        )
+        return
     try:
         result = await checkout.create_one_time_checkout(user.id, product_code, market, currency)
     except CheckoutRejected:
@@ -537,6 +549,57 @@ async def create_production_checkout(
         "Откройте защищённую страницу платёжного провайдера.",
         reply_markup=checkout_keyboard(result.url),
     )
+
+
+@router.message(PaymentStates.waiting_for_receipt_contact)
+async def receive_receipt_contact(
+    message: Message,
+    state: FSMContext,
+    onboarding: OnboardingService,
+    checkout: CheckoutService,
+) -> None:
+    data = await state.get_data()
+    if message.from_user is None or not message.text:
+        await state.clear()
+        await message.answer("Контакт для чека не получен. Оплата отменена.")
+        return
+    try:
+        contact = validate_receipt_contact(message.text)
+        product_code = str(data["product_code"])
+        market = str(data["market"])
+        currency = str(data["currency"])
+        user = await onboarding.current_user(message.from_user.id)
+        if user is None:
+            raise CheckoutRejected("user not found")
+        result = await checkout.create_one_time_checkout(
+            user.id, product_code, market, currency, receipt_contact=contact.value
+        )
+    except InvalidReceiptContact:
+        await message.answer(
+            "Некорректный email или телефон. Проверьте формат и отправьте ещё раз.",
+            reply_markup=receipt_contact_keyboard(),
+        )
+        return
+    except (CheckoutRejected, KeyError):
+        await state.clear()
+        await message.answer("Оплата сейчас недоступна. Попробуйте позже.")
+        return
+    await state.clear()
+    if result.url:
+        await message.answer(
+            "Откройте защищённую страницу платёжного провайдера.",
+            reply_markup=checkout_keyboard(result.url),
+        )
+    else:
+        await message.answer("Оплата создаётся. Попробуйте обновить через несколько секунд.")
+
+
+@router.callback_query(F.data == "credits:receipt:cancel")
+async def cancel_receipt_contact(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer("Оплата отменена.")
 
 
 @router.callback_query(F.data.startswith("billing:"))

@@ -289,6 +289,14 @@ def payment_market_keyboard(product_code: str) -> InlineKeyboardMarkup:
     )
 
 
+def receipt_contact_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отменить", callback_data="credits:receipt:cancel")]
+        ]
+    )
+
+
 def checkout_creating_keyboard(product_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

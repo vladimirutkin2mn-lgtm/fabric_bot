@@ -1,5 +1,7 @@
 """Lease-based PostgreSQL billing job worker."""
 
+import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -9,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.models import BillingJob, PaymentOrder, ProviderWebhookEvent
 from app.providers.payments.base import PermanentProviderError, UnknownProviderOutcome
 from app.providers.payments.gateway import CreateCheckout, OneTimePaymentGateway
-from app.services.checkout_service import ReceiptContactCipher
+from app.services.checkout_service import CheckoutRejected, ReceiptContactCipher
 from app.services.payment_completion_service import PaymentCompletionService
+
+logger = logging.getLogger(__name__)
 
 
 class BillingJobWorker:
@@ -66,8 +70,16 @@ class BillingJobWorker:
             await self._process(job_id, claim_id)
         except UnknownProviderOutcome:
             await self._retry(job_id, claim_id, "provider_unknown")
-        except PermanentProviderError:
-            await self._manual(job_id, claim_id, "provider_validation")
+        except PermanentProviderError as exc:
+            code = str(exc)
+            if code not in {"unsupported_provider", "corrupt_receipt_contact"}:
+                code = "provider_validation"
+            await self._manual(job_id, claim_id, code)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("billing_job_unexpected job_id=%s", job_id)
+            await self._retry(job_id, claim_id, "unexpected_job_error")
         return True
 
     async def _process(self, job_id: UUID, claim_id: UUID) -> None:
@@ -93,6 +105,8 @@ class BillingJobWorker:
             if not order:
                 raise PermanentProviderError()
             provider, checkout = order.provider, order.provider_checkout_id
+            if provider not in self._gateways:
+                raise PermanentProviderError("unsupported_provider")
             order_id = order.id
         if not checkout:
             checkout = await self._retry_checkout_creation(order_id)
@@ -103,7 +117,9 @@ class BillingJobWorker:
             owns_claim = current is not None and current.claim_id == claim_id
             if current is not None and owns_claim:
                 current.status = (
-                    "completed" if outcome not in {"manual_review"} else "manual_review"
+                    "manual_review"
+                    if outcome in {"manual_review", "identity_conflict"}
+                    else "completed"
                 )
                 current.lease_until = None
                 current.claim_id = None
@@ -112,7 +128,11 @@ class BillingJobWorker:
                     ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
                 )
                 if event is not None:
-                    event.status = "completed" if outcome != "manual_review" else "manual_review"
+                    event.status = (
+                        "manual_review"
+                        if outcome in {"manual_review", "identity_conflict"}
+                        else "completed"
+                    )
                     event.processed_at = datetime.now(UTC)
 
     async def _retry_checkout_creation(self, order_id: UUID) -> str:
@@ -125,7 +145,10 @@ class BillingJobWorker:
             if order.encrypted_receipt_contact:
                 if self._receipt_cipher is None:
                     raise PermanentProviderError("receipt_cipher_missing")
-                contact = self._receipt_cipher.decrypt(order.encrypted_receipt_contact)
+                try:
+                    contact = self._receipt_cipher.decrypt(order.encrypted_receipt_contact)
+                except CheckoutRejected as exc:
+                    raise PermanentProviderError("corrupt_receipt_contact") from exc
             request = CreateCheckout(
                 str(order.id),
                 order.product_code,
