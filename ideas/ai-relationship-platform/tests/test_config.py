@@ -1,9 +1,13 @@
 """Configuration tests."""
 
-from pydantic import SecretStr
+import pytest
+from pydantic import SecretStr, ValidationError
 from pytest import MonkeyPatch
 
 from app.config import Settings
+from app.providers.llm.factory import create_llm_client
+from app.providers.llm.openai import OpenAILLMClient
+from app.providers.llm.stub import StubLLMClient
 
 
 def test_empty_webhook_uses_polling(settings: Settings) -> None:
@@ -47,3 +51,53 @@ def test_secret_settings_are_redacted(settings: Settings) -> None:
 
     assert "plaintext-secret" not in rendered
     assert "**********" in rendered
+
+
+def test_stub_provider_needs_no_api_key(settings: Settings) -> None:
+    assert isinstance(create_llm_client(settings), StubLLMClient)
+
+
+def test_openai_provider_requires_key_without_exposing_secrets(settings: Settings) -> None:
+    missing = settings.model_copy(
+        update={"llm_provider": "openai", "openai_api_key": SecretStr("")}
+    )
+    with pytest.raises(ValueError) as caught:
+        create_llm_client(missing)
+    assert "API_KEY" in str(caught.value) and "plaintext" not in str(caught.value)
+    configured = missing.model_copy(update={"openai_api_key": SecretStr("plaintext-secret")})
+    assert isinstance(create_llm_client(configured), OpenAILLMClient)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("llm_provider", "xai"),
+        ("llm_timeout_seconds", 0),
+        ("llm_max_transport_attempts", 0),
+        ("llm_max_transport_attempts", 6),
+        ("llm_max_repair_attempts", -1),
+        ("llm_max_repair_attempts", 2),
+    ],
+)
+def test_llm_settings_reject_unsupported_or_unbounded_values(
+    settings: Settings, field: str, value: object
+) -> None:
+    values = settings.model_dump()
+    values[field] = value
+    with pytest.raises(ValidationError):
+        Settings.model_validate(values)
+
+
+def test_model_prompt_and_policy_are_configurable(settings: Settings) -> None:
+    configured = settings.model_copy(
+        update={
+            "llm_model": "configured-model",
+            "llm_prompt_version": "analysis_v2",
+            "llm_max_repair_attempts": 0,
+        }
+    )
+    assert (
+        configured.llm_model,
+        configured.llm_prompt_version,
+        configured.llm_max_repair_attempts,
+    ) == ("configured-model", "analysis_v2", 0)

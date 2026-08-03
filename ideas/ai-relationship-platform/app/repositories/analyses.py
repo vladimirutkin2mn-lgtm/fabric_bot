@@ -189,7 +189,7 @@ class SqlAlchemyAnalysisRepository:
             "output_tokens": metadata.output_tokens,
             "latency_ms": metadata.latency_ms,
             "provider_request_id": metadata.provider_request_id,
-            "completed_at": datetime.now(UTC),
+            "completed_at": datetime.now(UTC) if status == "completed" else None,
         }
         statement = (
             update(Analysis)

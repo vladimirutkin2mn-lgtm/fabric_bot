@@ -2,19 +2,21 @@
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.config import Settings
 from app.domain.analysis import (
     AnalysisRequest,
     AnalysisResult,
     SemanticValidationError,
     validate_analysis_semantics,
 )
-from app.prompts.loader import PromptNotFoundError, load_prompts
+from app.prompts.loader import PromptNotFoundError, PromptSet, load_prompts
 from app.providers.analytics import AnalyticsClient
 from app.providers.llm.base import (
     LLMAuthenticationError,
@@ -59,17 +61,19 @@ class AnalysisService:
         model: str,
         prompt_version: str = "analysis_v1",
         max_repair_attempts: int = 1,
+        prompt_loader: Callable[[str], PromptSet] = load_prompts,
     ) -> None:
         self._analyses, self._llm, self._analytics = analyses, llm, analytics
         self._provider, self._model, self._prompt_version = provider, model, prompt_version
         self._max_repairs = max_repair_attempts
+        self._prompt_loader = prompt_loader
 
     async def analyze(self, analysis_id: UUID, user_id: UUID) -> AnalysisServiceResult:
         outcome = await self._analyses.claim_processing(analysis_id, user_id)
         if outcome == ClaimOutcome.COMPLETED:
             stored = await self._analyses.get_owned(analysis_id, user_id)
             result = (
-                AnalysisResult.model_validate(stored.result_json)
+                AnalysisResult.model_validate_json(json.dumps(stored.result_json))
                 if stored and stored.result_json
                 else None
             )
@@ -86,25 +90,23 @@ class AnalysisService:
         if outcome != ClaimOutcome.CLAIMED:
             status, code = mapped[outcome]
             return AnalysisServiceResult(status, failure_code=code)
-        await self._analytics.track(
-            None,
-            "analysis_processing_started",
-            {
-                "analysis_id": str(analysis_id),
-                "provider": self._provider,
-                "model": self._model,
-                "prompt_version": self._prompt_version,
-            },
-        )
-        analysis = await self._analyses.load_processing(analysis_id, user_id)
-        if analysis is None:
-            return AnalysisServiceResult(
-                AnalysisServiceStatus.NOT_FOUND, failure_code="analysis_not_ready"
-            )
         attempts = 0
         completions: list[LLMCompletion] = []
         try:
-            prompts = load_prompts(self._prompt_version)
+            await self._analytics.track(
+                str(user_id),
+                "analysis_processing_started",
+                {
+                    "analysis_id": str(analysis_id),
+                    "provider": self._provider,
+                    "model": self._model,
+                    "prompt_version": self._prompt_version,
+                },
+            )
+            analysis = await self._analyses.load_processing(analysis_id, user_id)
+            if analysis is None:
+                raise RuntimeError("claimed analysis unavailable")
+            prompts = self._prompt_loader(self._prompt_version)
             request = AnalysisRequest.model_validate(
                 {
                     "messages": analysis.normalized_conversation_json,
@@ -164,7 +166,9 @@ class AnalysisService:
                 analysis_id, result.model_dump(mode="json"), metadata
             )
             await self._analytics.track(
-                None, "analysis_completed", self._properties(analysis_id, metadata, attempts > 1)
+                str(user_id),
+                "analysis_completed",
+                self._properties(analysis_id, metadata, attempts > 1),
             )
             logger.info(
                 "analysis_completed analysis_id=%s provider=%s model=%s "
@@ -177,24 +181,36 @@ class AnalysisService:
             )
             return AnalysisServiceResult(AnalysisServiceStatus.COMPLETED, result)
         except PromptNotFoundError:
-            return await self._fail(analysis_id, "prompt_not_found", attempts, completions)
-        except (ValidationError, ValueError, SemanticValidationError):
-            return await self._fail(analysis_id, "invalid_model_output", attempts, completions)
+            return await self._fail(user_id, analysis_id, "prompt_not_found", attempts, completions)
+        except (ValidationError, ValueError, SemanticValidationError) as error:
+            return await self._fail(
+                user_id, analysis_id, self._validation_failure_code(error), attempts, completions
+            )
         except LLMTimeoutError:
-            return await self._fail(analysis_id, "llm_timeout", attempts + 1, completions)
+            return await self._fail(user_id, analysis_id, "llm_timeout", attempts + 1, completions)
         except LLMRateLimitError:
-            return await self._fail(analysis_id, "llm_rate_limited", attempts + 1, completions)
+            return await self._fail(
+                user_id, analysis_id, "llm_rate_limited", attempts + 1, completions
+            )
         except LLMAuthenticationError:
             return await self._fail(
-                analysis_id, "llm_authentication_error", attempts + 1, completions
+                user_id, analysis_id, "llm_authentication_error", attempts + 1, completions
             )
         except LLMInvalidRequestError:
-            return await self._fail(analysis_id, "llm_invalid_request", attempts + 1, completions)
+            return await self._fail(
+                user_id, analysis_id, "llm_invalid_request", attempts + 1, completions
+            )
         except LLMTransientError:
-            return await self._fail(analysis_id, "llm_transient_error", attempts + 1, completions)
+            return await self._fail(
+                user_id, analysis_id, "llm_transient_error", attempts + 1, completions
+            )
         except LLMUnexpectedError:
             return await self._fail(
-                analysis_id, "unexpected_provider_error", attempts + 1, completions
+                user_id, analysis_id, "unexpected_provider_error", attempts + 1, completions
+            )
+        except Exception:
+            return await self._fail(
+                user_id, analysis_id, "unexpected_pipeline_error", attempts, completions
             )
 
     @staticmethod
@@ -213,6 +229,12 @@ class AnalysisService:
         if isinstance(error, SemanticValidationError):
             return error.issues
         return ["payload:invalid_json"]
+
+    @staticmethod
+    def _validation_failure_code(error: Exception) -> str:
+        if isinstance(error, SemanticValidationError) and error.evidence_related:
+            return "invalid_evidence_refs"
+        return "invalid_model_output"
 
     def _metadata(self, completions: list[LLMCompletion], attempts: int) -> LLMMetadata:
         last = completions[-1] if completions else None
@@ -241,18 +263,37 @@ class AnalysisService:
             "prompt_version": metadata.prompt_version,
             "attempt_count": str(metadata.attempt_count),
             "repair_used": str(repair).lower(),
+            "latency_bucket": self._bucket(metadata.latency_ms),
+            "input_token_bucket": self._bucket(metadata.input_tokens),
+            "output_token_bucket": self._bucket(metadata.output_tokens),
         }
         if failure_code:
             values["failure_code"] = failure_code
         return values
 
+    @staticmethod
+    def _bucket(value: int | None) -> str:
+        if value is None:
+            return "unknown"
+        for boundary in (10, 100, 1_000, 10_000):
+            if value < boundary:
+                return f"lt_{boundary}"
+        return "gte_10000"
+
     async def _fail(
-        self, analysis_id: UUID, code: str, attempts: int, completions: list[LLMCompletion]
+        self,
+        user_id: UUID,
+        analysis_id: UUID,
+        code: str,
+        attempts: int,
+        completions: list[LLMCompletion],
     ) -> AnalysisServiceResult:
         metadata = self._metadata(completions, attempts)
         await self._analyses.fail_processing(analysis_id, code, metadata)
         await self._analytics.track(
-            None, "analysis_failed", self._properties(analysis_id, metadata, attempts > 1, code)
+            str(user_id),
+            "analysis_failed",
+            self._properties(analysis_id, metadata, attempts > 1, code),
         )
         logger.warning(
             "analysis_failed analysis_id=%s provider=%s model=%s prompt_version=%s "
@@ -265,3 +306,21 @@ class AnalysisService:
             code,
         )
         return AnalysisServiceResult(AnalysisServiceStatus.FAILED, failure_code=code)
+
+
+def create_analysis_service(
+    settings: Settings,
+    analyses: AnalysisProcessingRepository,
+    llm: LLMClient,
+    analytics: AnalyticsClient,
+) -> AnalysisService:
+    """Compose the service without duplicating runtime policy defaults."""
+    return AnalysisService(
+        analyses,
+        llm,
+        analytics,
+        settings.llm_provider,
+        settings.llm_model,
+        settings.llm_prompt_version,
+        settings.llm_max_repair_attempts,
+    )

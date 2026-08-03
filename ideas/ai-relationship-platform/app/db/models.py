@@ -68,8 +68,9 @@ class Analysis(Base):
             name="ck_analyses_llm_metadata",
         ),
         CheckConstraint(
-            "(status <> 'completed' OR result_json IS NOT NULL) AND "
-            "(status <> 'failed' OR result_json IS NULL)",
+            "(status <> 'completed' OR (result_json IS NOT NULL AND completed_at IS NOT NULL)) "
+            "AND (status <> 'failed' OR (result_json IS NULL AND failure_code IS NOT NULL "
+            "AND completed_at IS NULL))",
             name="ck_analyses_terminal_result",
         ),
         Index(

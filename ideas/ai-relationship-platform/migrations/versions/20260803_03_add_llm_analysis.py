@@ -46,8 +46,9 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_analyses_terminal_result",
         "analyses",
-        "(status <> 'completed' OR result_json IS NOT NULL) AND "
-        "(status <> 'failed' OR result_json IS NULL)",
+        "(status <> 'completed' OR (result_json IS NOT NULL AND completed_at IS NOT NULL)) "
+        "AND (status <> 'failed' OR (result_json IS NULL AND failure_code IS NOT NULL "
+        "AND completed_at IS NULL))",
     )
 
 

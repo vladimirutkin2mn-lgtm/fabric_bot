@@ -17,6 +17,44 @@ from app.providers.llm.base import (
     LLMUnexpectedError,
 )
 
+_UNSUPPORTED_STRICT_SCHEMA_KEYS = frozenset(
+    {
+        "default",
+        "examples",
+        "format",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minimum",
+        "pattern",
+        "title",
+    }
+)
+
+
+def openai_strict_schema(value: object) -> object:
+    """Remove validation keywords unsupported by OpenAI strict structured outputs.
+
+    The complete Pydantic contract is always applied after receipt, so simplifying
+    the provider hint does not weaken domain validation.
+    """
+    if isinstance(value, dict):
+        converted = {
+            key: openai_strict_schema(item)
+            for key, item in value.items()
+            if key not in _UNSUPPORTED_STRICT_SCHEMA_KEYS
+        }
+        properties = converted.get("properties")
+        if converted.get("type") == "object" and isinstance(properties, dict):
+            converted["required"] = list(properties)
+            converted["additionalProperties"] = False
+        return converted
+    if isinstance(value, list):
+        return [openai_strict_schema(item) for item in value]
+    return value
+
 
 class OpenAILLMClient:
     def __init__(
@@ -49,7 +87,7 @@ class OpenAILLMClient:
                             "type": "json_schema",
                             "name": "analysis_result",
                             "strict": True,
-                            "schema": request.schema,
+                            "schema": openai_strict_schema(request.schema),
                         }
                     },
                     store=False,
