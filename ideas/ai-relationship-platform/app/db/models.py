@@ -96,8 +96,12 @@ class Analysis(Base):
     status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
     intake_step: Mapped[str] = mapped_column(String(40), default="waiting_for_conversation")
     source_type: Mapped[str] = mapped_column(String(20), default="text", server_default="text")
-    normalized_conversation_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
-    participants_json: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    normalized_conversation_json: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    participants_json: Mapped[dict[str, str] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     user_participant_label: Mapped[str | None] = mapped_column(String(8))
     user_goal: Mapped[str | None] = mapped_column(Text)
     relationship_stage: Mapped[str | None] = mapped_column(String(32))

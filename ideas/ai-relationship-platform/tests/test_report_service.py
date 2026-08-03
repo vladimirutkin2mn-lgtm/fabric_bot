@@ -199,3 +199,12 @@ async def test_analytics_failure_never_changes_feedback_or_deletion(
     assert await reports.feedback(row.id, row.user_id, 5) is FeedbackOutcome.RECORDED
     assert await reports.delete(row.id, row.user_id) is DeletionOutcome.DELETED
     assert "SECRET-PRIVATE-CONTENT" not in caplog.text
+
+
+async def test_corrupted_owned_result_keeps_only_safe_analysis_metadata() -> None:
+    row = analysis(value={"summary": "SECRET-PRIVATE-CONTENT", "unknown": True})
+    outcome = await service([row]).retrieve(row.id, row.user_id)
+    assert outcome.status is ReportStatus.CORRUPTED_RESULT
+    assert outcome.analysis is row and outcome.analysis.id == row.id
+    assert outcome.result is None and outcome.report is None
+    assert (await service([row]).retrieve(row.id, uuid4())).analysis is None

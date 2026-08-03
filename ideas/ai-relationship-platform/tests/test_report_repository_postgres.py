@@ -168,3 +168,31 @@ async def test_wrong_owner_cannot_delete_or_feedback(
         repository = SqlAlchemyAnalysisRepository(session)
         assert await repository.delete_owned(row.id, uuid4()) is DeletionOutcome.NOT_FOUND
         assert await repository.record_feedback(row.id, uuid4(), 5) is FeedbackOutcome.NOT_FOUND
+
+
+async def test_intake_cancellation_uses_sql_null_and_preserves_nested_json_null_before_clear(
+    postgres_m4: async_sessionmaker[AsyncSession],
+) -> None:
+    row = await create_row(postgres_m4, "draft")
+    async with postgres_m4() as session:
+        stored = await session.get(Analysis, row.id)
+        assert stored is not None
+        stored.intake_step = "waiting_for_participant"
+        stored.normalized_conversation_json = [
+            {"id": "m1", "speaker": "A", "timestamp": None, "text": "PRIVATE", "source_order": 1}
+        ]
+        await session.commit()
+        await session.refresh(stored)
+        assert stored.normalized_conversation_json is not None
+        assert stored.normalized_conversation_json[0]["timestamp"] is None
+        await SqlAlchemyAnalysisRepository(session).cancel(stored)
+        values = (
+            await session.execute(
+                text(
+                    "SELECT normalized_conversation_json IS NULL, participants_json IS NULL "
+                    "FROM analyses WHERE id=:id"
+                ),
+                {"id": row.id},
+            )
+        ).one()
+        assert values == (True, True)

@@ -28,7 +28,11 @@ from app.services.report_service import ReportRepository, ReportService
 
 
 class CompletedRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[UUID, UUID]] = []
+
     async def analyze(self, analysis_id: UUID, user_id: UUID) -> AnalysisServiceResult:
+        self.calls.append((analysis_id, user_id))
         payload = {
             "quality": {"sufficient": True, "issues": [], "participants_detected": ["A", "B"]},
             "summary": "Тестовый вывод.",
@@ -62,6 +66,7 @@ class RecordingSession(AiohttpSession):
     def __init__(self) -> None:
         super().__init__()
         self.methods: list[TelegramMethod[Any]] = []
+        self.fail_text: str | None = None
 
     async def make_request(
         self,
@@ -70,6 +75,9 @@ class RecordingSession(AiohttpSession):
         timeout: int | None = None,  # noqa: ASYNC109 -- aiogram API
     ) -> TelegramType:
         self.methods.append(method)
+        if isinstance(method, SendMessage) and method.text == self.fail_text:
+            self.fail_text = None
+            raise RuntimeError("SECRET-PRIVATE-CONTENT")
         if isinstance(method, SendMessage):
             return cast(
                 TelegramType,
@@ -471,3 +479,44 @@ async def test_rate_limit_middleware_applies_to_start_and_callbacks() -> None:
     alerts = [method for method in session.methods if isinstance(method, AnswerCallbackQuery)]
     assert any(method.text == texts.RATE_LIMITED and method.show_alert for method in alerts)
     await bot.session.close()
+
+
+async def test_processing_notice_failure_still_runs_analysis_privately(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    dispatcher, bot, session, users, service = harness
+    await complete(service)
+    intake = cast(ConversationIntakeService, dispatcher["intake"])
+    runner = CompletedRunner()
+    dispatcher["analysis_service"] = runner
+    await dispatcher.feed_update(
+        bot, callback_update("menu:analyze", 90), onboarding=service, intake=intake
+    )
+    draft = await intake.active(users.users[42].id)
+    assert draft is not None
+    await dispatcher.feed_update(
+        bot,
+        message_update("A: one\nB: two\nA: three\nB: four", 91),
+        onboarding=service,
+        intake=intake,
+    )
+    await dispatcher.feed_update(
+        bot,
+        callback_update(f"intake:participant:{draft.id}:A", 92),
+        onboarding=service,
+        intake=intake,
+    )
+    await dispatcher.feed_update(
+        bot, callback_update(f"intake:goal:{draft.id}:0", 93), onboarding=service, intake=intake
+    )
+    session.fail_text = texts.PROCESSING
+    await dispatcher.feed_update(
+        bot,
+        callback_update(f"intake:stage:{draft.id}:dating", 94),
+        onboarding=service,
+        intake=intake,
+    )
+    assert runner.calls == [(draft.id, draft.user_id)]
+    assert "Тестовый вывод." in " ".join(sent_texts(session))
+    assert "SECRET-PRIVATE-CONTENT" not in caplog.text
+    assert "delivery_stage=processing_notice" in caplog.text

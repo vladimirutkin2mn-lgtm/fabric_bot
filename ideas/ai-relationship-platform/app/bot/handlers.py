@@ -1,6 +1,7 @@
 """Telegram onboarding and conversation intake handlers."""
 # ruff: noqa: RUF001, E501
 
+import logging
 from uuid import UUID
 
 from aiogram import F, Router
@@ -13,6 +14,7 @@ from app.bot.keyboards import (
     age_keyboard,
     cancel_keyboard,
     consent_keyboard,
+    corrupted_report_keyboard,
     deletion_keyboard,
     goal_keyboard,
     history_keyboard,
@@ -37,6 +39,7 @@ from app.services.report_renderer import RELATIONSHIP_STAGE_LABELS
 from app.services.report_service import ReportResult, ReportService, ReportStatus
 
 router = Router(name="onboarding")
+logger = logging.getLogger(__name__)
 
 
 def identity_from_callback(callback: CallbackQuery) -> TelegramIdentity:
@@ -329,7 +332,14 @@ async def choose_stage(
     await callback.answer()
     await state.clear()
     if isinstance(callback.message, Message):
-        await callback.message.answer(texts.PROCESSING)
+        try:
+            await callback.message.answer(texts.PROCESSING)
+        except Exception:
+            logger.warning(
+                "telegram_delivery_failed analysis_id=%s "
+                "delivery_stage=processing_notice error_category=telegram_delivery",
+                completed.id,
+            )
         outcome = await analysis_service.analyze(completed.id, completed.user_id)
         if outcome.status is AnalysisServiceStatus.COMPLETED and outcome.result is not None:
             from app.services.report_renderer import ReportRenderer
@@ -509,12 +519,13 @@ async def open_history(
                 "chunk_count_bucket": str(min(len(loaded.report.chunks), 4)),
             },
         )
-    else:
+    elif loaded and loaded.status is ReportStatus.CORRUPTED_RESULT and loaded.analysis:
         await callback.message.answer(
-            texts.REPORT_CORRUPTED
-            if loaded and loaded.status is ReportStatus.CORRUPTED_RESULT
-            else texts.REPORT_UNAVAILABLE
+            texts.REPORT_CORRUPTED,
+            reply_markup=corrupted_report_keyboard(loaded.analysis.id),
         )
+    else:
+        await callback.message.answer(texts.REPORT_UNAVAILABLE)
 
 
 @router.callback_query(F.data.startswith("report:replies:"))
@@ -582,7 +593,11 @@ async def delete_prompt(
     loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.analysis:
+        if (
+            loaded
+            and loaded.status in {ReportStatus.COMPLETED, ReportStatus.CORRUPTED_RESULT}
+            and loaded.analysis
+        ):
             await callback.message.answer(
                 "Удалить этот разбор и его содержимое?",
                 reply_markup=deletion_keyboard(loaded.analysis.id),
@@ -600,7 +615,7 @@ async def delete_cancel(
     if isinstance(callback.message, Message):
         await callback.message.answer(
             "Удаление отменено."
-            if loaded and loaded.status is ReportStatus.COMPLETED
+            if loaded and loaded.status in {ReportStatus.COMPLETED, ReportStatus.CORRUPTED_RESULT}
             else texts.REPORT_UNAVAILABLE
         )
 
@@ -619,6 +634,7 @@ async def delete_confirm(
         and loaded.status
         in {
             ReportStatus.COMPLETED,
+            ReportStatus.CORRUPTED_RESULT,
             ReportStatus.DELETED,
         }
     ):

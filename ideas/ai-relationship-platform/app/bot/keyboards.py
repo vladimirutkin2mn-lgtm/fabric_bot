@@ -170,6 +170,20 @@ def deletion_keyboard(analysis_id: object) -> InlineKeyboardMarkup:
     )
 
 
+def corrupted_report_keyboard(analysis_id: object) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Удалить разбор",
+                    callback_data=f"report:delete_prompt:{analysis_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="Главное меню", callback_data="report:menu")],
+        ]
+    )
+
+
 def history_keyboard(
     items: Sequence[tuple[object, str]], page: int, has_next: bool
 ) -> InlineKeyboardMarkup:

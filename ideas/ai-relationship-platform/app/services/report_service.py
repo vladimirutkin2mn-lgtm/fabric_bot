@@ -85,7 +85,7 @@ class ReportService:
             result = AnalysisResult.model_validate_json(payload)
         except (ValidationError, ValueError, TypeError):
             logger.warning("report_result_corrupted analysis_id=%s", analysis_id)
-            return ReportResult(ReportStatus.CORRUPTED_RESULT)
+            return ReportResult(ReportStatus.CORRUPTED_RESULT, analysis)
         return ReportResult(ReportStatus.COMPLETED, analysis, result, self._renderer.render(result))
 
     async def history(self, user_id: UUID, page: int) -> HistoryPage:
