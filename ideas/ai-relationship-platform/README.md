@@ -112,5 +112,40 @@ TEST_DATABASE_URL=postgresql+asyncpg://heartsignal:heartsignal@localhost:5432/he
 `CONTENT_ENCRYPTION_KEY`, `APP_ENV` и `LOG_LEVEL`. `TELEGRAM_WEBHOOK_URL` оставьте пустым;
 остальные переменные имеют безопасные значения-заглушки в `.env.example`.
 
-Текущий milestone принимает только одно текстовое Telegram-сообщение. Изображения, OCR,
-голос, сбор нескольких обновлений, LLM-анализ, отчёты, кредиты и платежи не реализованы.
+## Milestone 3: LLM-анализ
+
+Ядро теперь атомарно переводит завершённый черновик `draft → processing → completed`
+или `failed`, получает строгий JSON Schema из Pydantic-модели, проверяет ссылки на сообщения
+и сохраняет только полностью валидный результат. Провайдеры изолированы интерфейсом
+`LLMClient`: локально и в CI используется детерминированный `stub`; первый рекомендуемый
+production-вариант — `LLM_PROVIDER=openai` и настраиваемый `LLM_MODEL=gpt-5.4-mini`.
+Реальные запросы OpenAI оплачиваются отдельно по тарифам API.
+
+Настройки: `LLM_TIMEOUT_SECONDS=45`, `LLM_MAX_TRANSPORT_ATTEMPTS=2` (1–5),
+`LLM_MAX_REPAIR_ATTEMPTS=1` (0–1), `LLM_PROMPT_VERSION=analysis_v1`. Для OpenAI задайте
+`OPENAI_API_KEY`; stub ключа не требует. Транспортные/server-сбои повторяются в заданном
+пределе, ошибки авторизации и неверного запроса — нет. Невалидный результат получает не
+более одной коррекции; ни первый невалидный ответ, ни prompts не сохраняются.
+
+После запуска PostgreSQL и `alembic upgrade head` безопасная демонстрация на вымышленных
+данных выполняется командой:
+
+```bash
+python -m app.cli.demo_analysis
+```
+
+Миграцию можно проверить цепочкой:
+
+```bash
+alembic upgrade head
+alembic downgrade -1
+alembic upgrade head
+```
+
+В БД сохраняются результат, provider/model/prompt version, число LLM-попыток, токены,
+latency, безопасный request ID и временные метки. Сообщения, цели, prompts, невалидные
+ответы, ключи и stack traces не попадают в логи, аналитику или failure metadata.
+
+Telegram-рендеринг отчёта пока не реализован и текущий bot не вызывает платную модель
+автоматически. Также не реализованы кредиты, платежи, Grok/xAI и OpenRouter; xAI остаётся
+возможным будущим адаптером. Изображения, OCR, голос и фоновые workers остаются вне scope.

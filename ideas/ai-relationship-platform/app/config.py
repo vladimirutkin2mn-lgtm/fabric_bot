@@ -18,9 +18,13 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     telegram_webhook_url: str = ""
     telegram_webhook_secret: SecretStr = Field(default=SecretStr(""))
-    llm_provider: str = "stub"
+    llm_provider: Literal["stub", "openai"] = "stub"
     openai_api_key: SecretStr = Field(default=SecretStr(""))
     llm_model: str = "stub"
+    llm_timeout_seconds: float = Field(default=45, gt=0)
+    llm_max_transport_attempts: int = Field(default=2, ge=1, le=5)
+    llm_max_repair_attempts: int = Field(default=1, ge=0, le=1)
+    llm_prompt_version: str = "analysis_v1"
     content_encryption_key: SecretStr
     raw_content_retention_days: int = Field(default=30, ge=1)
     conversation_min_messages: int = Field(default=4, ge=1)

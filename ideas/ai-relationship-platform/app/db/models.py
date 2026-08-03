@@ -61,6 +61,17 @@ class Analysis(Base):
             name="ck_analyses_intake_step",
         ),
         CheckConstraint("message_count >= 0 AND character_count >= 0", name="ck_analyses_counts"),
+        CheckConstraint(
+            "llm_attempt_count >= 0 AND (input_tokens IS NULL OR input_tokens >= 0) "
+            "AND (output_tokens IS NULL OR output_tokens >= 0) "
+            "AND (latency_ms IS NULL OR latency_ms >= 0)",
+            name="ck_analyses_llm_metadata",
+        ),
+        CheckConstraint(
+            "(status <> 'completed' OR result_json IS NOT NULL) AND "
+            "(status <> 'failed' OR result_json IS NULL)",
+            name="ck_analyses_terminal_result",
+        ),
         Index(
             "uq_analyses_active_draft_user",
             "user_id",
@@ -81,6 +92,18 @@ class Analysis(Base):
     relationship_stage: Mapped[str | None] = mapped_column(String(32))
     message_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     character_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    result_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    llm_provider: Mapped[str | None] = mapped_column(String(32))
+    model_name: Mapped[str | None] = mapped_column(String(255))
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    llm_attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
