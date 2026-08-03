@@ -30,6 +30,22 @@ class ClaimOutcome(StrEnum):
     NOT_FOUND = "not_found"
 
 
+class FeedbackOutcome(StrEnum):
+    RECORDED = "recorded"
+    ALREADY_RECORDED = "already_recorded"
+    NOT_COMPLETED = "not_completed"
+    DELETED = "deleted"
+    NOT_FOUND = "not_found"
+    INVALID_SCORE = "invalid_score"
+
+
+class DeletionOutcome(StrEnum):
+    DELETED = "deleted"
+    ALREADY_DELETED = "already_deleted"
+    NOT_FOUND = "not_found"
+    NOT_COMPLETED = "not_completed"
+
+
 class LLMMetadata:
     def __init__(
         self,
@@ -103,6 +119,101 @@ class SqlAlchemyAnalysisRepository:
                 select(Analysis).where(Analysis.id == analysis_id, Analysis.user_id == user_id)
             ),
         )
+
+    async def get_owned_completed(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
+        return cast(
+            Analysis | None,
+            await self._session.scalar(
+                select(Analysis).where(
+                    Analysis.id == analysis_id,
+                    Analysis.user_id == user_id,
+                    Analysis.status == "completed",
+                )
+            ),
+        )
+
+    async def list_completed(
+        self, user_id: UUID, page: int, page_size: int = 8
+    ) -> tuple[list[Analysis], bool]:
+        safe_page = max(page, 0)
+        rows = list(
+            (
+                await self._session.scalars(
+                    select(Analysis)
+                    .where(Analysis.user_id == user_id, Analysis.status == "completed")
+                    .order_by(Analysis.completed_at.desc(), Analysis.id.desc())
+                    .offset(safe_page * page_size)
+                    .limit(page_size + 1)
+                )
+            ).all()
+        )
+        return rows[:page_size], len(rows) > page_size
+
+    async def record_feedback(
+        self, analysis_id: UUID, user_id: UUID, score: int
+    ) -> FeedbackOutcome:
+        if score not in range(1, 6):
+            return FeedbackOutcome.INVALID_SCORE
+        changed = cast(
+            CursorResult[object],
+            await self._session.execute(
+                update(Analysis)
+                .where(
+                    Analysis.id == analysis_id,
+                    Analysis.user_id == user_id,
+                    Analysis.status == "completed",
+                    Analysis.feedback_score.is_(None),
+                )
+                .values(feedback_score=score, feedback_submitted_at=datetime.now(UTC))
+            ),
+        )
+        await self._session.commit()
+        if changed.rowcount == 1:
+            return FeedbackOutcome.RECORDED
+        current = await self.get_owned(analysis_id, user_id)
+        if current is None:
+            return FeedbackOutcome.NOT_FOUND
+        if current.status == "deleted":
+            return FeedbackOutcome.DELETED
+        if current.feedback_score is not None:
+            return FeedbackOutcome.ALREADY_RECORDED
+        return FeedbackOutcome.NOT_COMPLETED
+
+    async def delete_owned(self, analysis_id: UUID, user_id: UUID) -> DeletionOutcome:
+        changed = cast(
+            CursorResult[object],
+            await self._session.execute(
+                update(Analysis)
+                .where(
+                    Analysis.id == analysis_id,
+                    Analysis.user_id == user_id,
+                    Analysis.status == "completed",
+                )
+                .values(
+                    status="deleted",
+                    normalized_conversation_json=None,
+                    participants_json=None,
+                    user_participant_label=None,
+                    user_goal=None,
+                    relationship_stage=None,
+                    result_json=None,
+                    feedback_score=None,
+                    feedback_submitted_at=None,
+                    message_count=0,
+                    character_count=0,
+                    completed_at=None,
+                )
+            ),
+        )
+        await self._session.commit()
+        if changed.rowcount == 1:
+            return DeletionOutcome.DELETED
+        current = await self.get_owned(analysis_id, user_id)
+        if current is None:
+            return DeletionOutcome.NOT_FOUND
+        if current.status == "deleted":
+            return DeletionOutcome.ALREADY_DELETED
+        return DeletionOutcome.NOT_COMPLETED
 
     async def load_processing(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
         """Load claimed input and close the read transaction before network I/O."""

@@ -77,6 +77,9 @@ class OpenAILLMClient:
         )
         self._model, self._timeout, self._max_attempts = model, timeout_seconds, max_attempts
 
+    async def aclose(self) -> None:
+        await self._client.close()
+
     async def generate_analysis(self, request: LLMRequest) -> LLMCompletion:
         started = time.monotonic()
         for attempt in range(1, self._max_attempts + 1):

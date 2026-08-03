@@ -1,7 +1,7 @@
 """Clean LLM boundary with no vendor types."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,17 @@ class LLMCompletion:
 
 class LLMClient(Protocol):
     async def generate_analysis(self, request: LLMRequest) -> LLMCompletion: ...
+
+
+@runtime_checkable
+class ClosableLLMClient(Protocol):
+    async def aclose(self) -> None: ...
+
+
+async def close_llm_client(client: LLMClient) -> None:
+    """Close lifecycle-aware providers; ordinary protocol implementations need no close."""
+    if isinstance(client, ClosableLLMClient):
+        await client.aclose()
 
 
 class LLMError(Exception):

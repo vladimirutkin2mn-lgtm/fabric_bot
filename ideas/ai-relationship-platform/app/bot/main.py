@@ -12,6 +12,8 @@ from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
 from app.logging import configure_logging
 from app.providers.analytics import NoOpAnalyticsClient
+from app.providers.llm.base import close_llm_client
+from app.providers.llm.factory import create_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +22,9 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     """Create a dispatcher with explicit, per-update dependencies."""
     dispatcher = Dispatcher()
     engine = create_engine(str(settings.database_url))
+    llm = create_llm_client(settings)
     dependency_middleware = OnboardingDependencyMiddleware(
-        create_session_factory(engine), NoOpAnalyticsClient(), settings
+        create_session_factory(engine), NoOpAnalyticsClient(), settings, llm
     )
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)
@@ -29,6 +32,7 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher.update.outer_middleware(dependency_middleware)
     dispatcher.include_router(router)
     dispatcher["database_engine"] = engine
+    dispatcher["llm_client"] = llm
     return dispatcher
 
 
@@ -55,8 +59,14 @@ async def run(settings: Settings | None = None) -> None:
             await bot.delete_webhook(drop_pending_updates=False)
             await dispatcher.start_polling(bot)
     finally:
-        await dispatcher["database_engine"].dispose()
-        await bot.session.close()
+        try:
+            await close_llm_client(dispatcher["llm_client"])
+        except Exception:
+            logger.warning("LLM client shutdown failed")
+        try:
+            await dispatcher["database_engine"].dispose()
+        finally:
+            await bot.session.close()
 
 
 def main() -> None:

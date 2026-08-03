@@ -74,6 +74,15 @@ class Analysis(Base):
             "AND completed_at IS NULL))",
             name="ck_analyses_terminal_result",
         ),
+        CheckConstraint(
+            "feedback_score IS NULL OR (feedback_score BETWEEN 1 AND 5 "
+            "AND feedback_submitted_at IS NOT NULL)",
+            name="ck_analyses_feedback",
+        ),
+        CheckConstraint(
+            "status <> 'deleted' OR (feedback_score IS NULL AND feedback_submitted_at IS NULL)",
+            name="ck_analyses_deleted_feedback",
+        ),
         Index(
             "uq_analyses_active_draft_user",
             "user_id",
@@ -87,8 +96,12 @@ class Analysis(Base):
     status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
     intake_step: Mapped[str] = mapped_column(String(40), default="waiting_for_conversation")
     source_type: Mapped[str] = mapped_column(String(20), default="text", server_default="text")
-    normalized_conversation_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
-    participants_json: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    normalized_conversation_json: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    participants_json: Mapped[dict[str, str] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     user_participant_label: Mapped[str | None] = mapped_column(String(8))
     user_goal: Mapped[str | None] = mapped_column(Text)
     relationship_stage: Mapped[str | None] = mapped_column(String(32))
@@ -108,6 +121,8 @@ class Analysis(Base):
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_code: Mapped[str | None] = mapped_column(String(64))
+    feedback_score: Mapped[int | None] = mapped_column(Integer)
+    feedback_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

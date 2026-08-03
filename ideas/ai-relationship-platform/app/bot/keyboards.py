@@ -1,6 +1,7 @@
 """Inline keyboard factories."""
 # ruff: noqa: RUF001
 
+from collections.abc import Sequence
 from uuid import UUID
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -111,4 +112,95 @@ def stage_keyboard(analysis_id: UUID) -> InlineKeyboardMarkup:
         for text, code in options
     ]
     rows.extend(exit_rows(analysis_id, resend=True))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def report_actions_keyboard(analysis_id: object) -> InlineKeyboardMarkup:
+    value = str(analysis_id)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Варианты ответа", callback_data=f"report:replies:{value}")],
+            [
+                InlineKeyboardButton(
+                    text="Задать уточняющий вопрос", callback_data=f"report:followup:{value}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Разобрать новый фрагмент", callback_data=f"report:new_fragment:{value}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Удалить разбор", callback_data=f"report:delete_prompt:{value}"
+                )
+            ],
+            [InlineKeyboardButton(text="Вернуться в меню", callback_data="report:menu")],
+        ]
+    )
+
+
+def feedback_keyboard(analysis_id: object) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=str(score), callback_data=f"feedback:{analysis_id}:{score}"
+                )
+                for score in range(1, 6)
+            ]
+        ]
+    )
+
+
+def deletion_keyboard(analysis_id: object) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Удалить", callback_data=f"report:delete_confirm:{analysis_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Отмена", callback_data=f"report:delete_cancel:{analysis_id}"
+                )
+            ],
+        ]
+    )
+
+
+def corrupted_report_keyboard(analysis_id: object) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Удалить разбор",
+                    callback_data=f"report:delete_prompt:{analysis_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="Главное меню", callback_data="report:menu")],
+        ]
+    )
+
+
+def history_keyboard(
+    items: Sequence[tuple[object, str]], page: int, has_next: bool
+) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=f"history:open:{item_id}")]
+        for item_id, label in items
+    ]
+    navigation = []
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton(text="← Назад", callback_data=f"history:page:{page - 1}")
+        )
+    if has_next:
+        navigation.append(
+            InlineKeyboardButton(text="Вперёд →", callback_data=f"history:page:{page + 1}")
+        )
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="report:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

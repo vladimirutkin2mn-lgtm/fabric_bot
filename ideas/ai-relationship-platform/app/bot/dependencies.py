@@ -9,11 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.providers.analytics import AnalyticsClient
+from app.providers.llm.base import LLMClient
 from app.repositories.analyses import SqlAlchemyAnalysisRepository
 from app.repositories.users import SqlAlchemyUserRepository
+from app.services.analysis_service import create_analysis_service
 from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.onboarding import OnboardingService
+from app.services.report_renderer import ReportRenderer
+from app.services.report_service import ReportService
 
 
 class OnboardingDependencyMiddleware(BaseMiddleware):
@@ -24,10 +28,12 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
         sessions: async_sessionmaker[AsyncSession],
         analytics: AnalyticsClient,
         settings: Settings,
+        llm: LLMClient,
     ) -> None:
         self._sessions = sessions
         self._analytics = analytics
         self._settings = settings
+        self._llm = llm
 
     async def __call__(
         self,
@@ -36,11 +42,12 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         async with self._sessions() as session:
+            analyses = SqlAlchemyAnalysisRepository(session)
             data["onboarding"] = OnboardingService(
                 SqlAlchemyUserRepository(session), self._analytics
             )
             data["intake"] = ConversationIntakeService(
-                SqlAlchemyAnalysisRepository(session),
+                analyses,
                 ConversationParser(
                     self._settings.conversation_min_messages,
                     self._settings.conversation_max_characters,
@@ -49,4 +56,10 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
                 self._analytics,
                 self._settings.analysis_goal_max_characters,
             )
+            data["analysis_service"] = create_analysis_service(
+                self._settings, analyses, self._llm, self._analytics
+            )
+            data["reports"] = ReportService(analyses, ReportRenderer(), self._analytics)
+            data["analysis_repository"] = analyses
+            data["analytics"] = self._analytics
             return await handler(event, data)

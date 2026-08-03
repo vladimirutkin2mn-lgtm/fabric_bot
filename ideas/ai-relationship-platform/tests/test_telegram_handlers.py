@@ -18,9 +18,46 @@ from app.bot import texts
 from app.bot.handlers import placeholder, router, start
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
 from app.db.models import Analysis, User
+from app.domain.analysis import AnalysisResult
+from app.services.analysis_service import AnalysisServiceResult, AnalysisServiceStatus
 from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.onboarding import CURRENT_CONSENT_VERSION, OnboardingService, TelegramIdentity
+from app.services.report_renderer import ReportRenderer
+from app.services.report_service import ReportRepository, ReportService
+
+
+class CompletedRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[UUID, UUID]] = []
+
+    async def analyze(self, analysis_id: UUID, user_id: UUID) -> AnalysisServiceResult:
+        self.calls.append((analysis_id, user_id))
+        payload = {
+            "quality": {"sufficient": True, "issues": [], "participants_detected": ["A", "B"]},
+            "summary": "Тестовый вывод.",
+            "dynamic": {"direction": "mixed", "confidence": 0.6},
+            "reciprocity_score": {
+                "value": 50,
+                "positive_signals": [],
+                "negative_signals": [],
+                "limitations": [],
+            },
+            "observations": [
+                {"claim": "Диалог продолжается.", "evidence_refs": ["m1"], "importance": "medium"}
+            ],
+            "hypotheses": [],
+            "unknowns": [],
+            "next_actions": [],
+            "reply_suggestions": [],
+            "safety": {"high_risk_detected": False, "categories": []},
+        }
+        import json
+
+        return AnalysisServiceResult(
+            AnalysisServiceStatus.COMPLETED, AnalysisResult.model_validate_json(json.dumps(payload))
+        )
+
 
 type Harness = tuple[Dispatcher, Bot, "RecordingSession", "MemoryUsers", OnboardingService]
 
@@ -29,6 +66,7 @@ class RecordingSession(AiohttpSession):
     def __init__(self) -> None:
         super().__init__()
         self.methods: list[TelegramMethod[Any]] = []
+        self.fail_text: str | None = None
 
     async def make_request(
         self,
@@ -37,6 +75,9 @@ class RecordingSession(AiohttpSession):
         timeout: int | None = None,  # noqa: ASYNC109 -- aiogram API
     ) -> TelegramType:
         self.methods.append(method)
+        if isinstance(method, SendMessage) and method.text == self.fail_text:
+            self.fail_text = None
+            raise RuntimeError("SECRET-PRIVATE-CONTENT")
         if isinstance(method, SendMessage):
             return cast(
                 TelegramType,
@@ -161,6 +202,10 @@ async def harness() -> AsyncGenerator[Harness, None]:
     analyses = MemoryAnalyses()
     dispatcher["intake"] = ConversationIntakeService(
         analyses, ConversationParser(), NoOpAnalytics()
+    )
+    dispatcher["analysis_service"] = CompletedRunner()
+    dispatcher["reports"] = ReportService(
+        cast(ReportRepository, analyses), ReportRenderer(), NoOpAnalytics()
     )
     yield dispatcher, bot, session, users, service
     await bot.session.close()
@@ -310,7 +355,8 @@ async def test_complete_intake_duplicate_callbacks_and_restart_resume(harness: H
     await dispatcher.feed_update(bot, callback_update(stage, 16), onboarding=service, intake=intake)
     await dispatcher.feed_update(bot, callback_update(stage, 17), onboarding=service, intake=intake)
     assert draft.intake_step == "complete" and draft.relationship_stage == "not_provided"
-    assert texts.DRAFT_READY in sent_texts(session)
+    assert texts.PROCESSING in sent_texts(session)
+    assert "Тестовый вывод." in " ".join(sent_texts(session))
 
     second = await intake.start(users.users[42])
     await intake.submit(second, "A: 1\nB: 2\nA: 3\nB: 4")
@@ -433,3 +479,44 @@ async def test_rate_limit_middleware_applies_to_start_and_callbacks() -> None:
     alerts = [method for method in session.methods if isinstance(method, AnswerCallbackQuery)]
     assert any(method.text == texts.RATE_LIMITED and method.show_alert for method in alerts)
     await bot.session.close()
+
+
+async def test_processing_notice_failure_still_runs_analysis_privately(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    dispatcher, bot, session, users, service = harness
+    await complete(service)
+    intake = cast(ConversationIntakeService, dispatcher["intake"])
+    runner = CompletedRunner()
+    dispatcher["analysis_service"] = runner
+    await dispatcher.feed_update(
+        bot, callback_update("menu:analyze", 90), onboarding=service, intake=intake
+    )
+    draft = await intake.active(users.users[42].id)
+    assert draft is not None
+    await dispatcher.feed_update(
+        bot,
+        message_update("A: one\nB: two\nA: three\nB: four", 91),
+        onboarding=service,
+        intake=intake,
+    )
+    await dispatcher.feed_update(
+        bot,
+        callback_update(f"intake:participant:{draft.id}:A", 92),
+        onboarding=service,
+        intake=intake,
+    )
+    await dispatcher.feed_update(
+        bot, callback_update(f"intake:goal:{draft.id}:0", 93), onboarding=service, intake=intake
+    )
+    session.fail_text = texts.PROCESSING
+    await dispatcher.feed_update(
+        bot,
+        callback_update(f"intake:stage:{draft.id}:dating", 94),
+        onboarding=service,
+        intake=intake,
+    )
+    assert runner.calls == [(draft.id, draft.user_id)]
+    assert "Тестовый вывод." in " ".join(sent_texts(session))
+    assert "SECRET-PRIVATE-CONTENT" not in caplog.text
+    assert "delivery_stage=processing_notice" in caplog.text
