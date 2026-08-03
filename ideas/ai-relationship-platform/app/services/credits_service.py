@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Analysis, CreditTransaction, User
+from app.db.models import Analysis, CreditReservation, CreditTransaction, User
 
 
 class SpendOutcome(StrEnum):
@@ -102,8 +102,18 @@ class CreditsService:
                 if refunded is not None:
                     return SpendResult(SpendOutcome.ALREADY_SPENT_REFUNDED, balance=balance)
                 return SpendResult(SpendOutcome.ALREADY_SPENT_ACTIVE, existing.id, balance)
-            if balance < amount:
-                return SpendResult(SpendOutcome.INSUFFICIENT_BALANCE, balance=balance)
+            reserved = int(
+                await session.scalar(
+                    select(func.coalesce(func.sum(CreditReservation.credit_units), 0)).where(
+                        CreditReservation.user_id == user_id,
+                        CreditReservation.status == "active",
+                    )
+                )
+                or 0
+            )
+            available = max(0, balance - reserved)
+            if available < amount:
+                return SpendResult(SpendOutcome.INSUFFICIENT_BALANCE, balance=available)
             row = CreditTransaction(
                 user_id=user_id,
                 type="spend",
@@ -113,7 +123,7 @@ class CreditsService:
             )
             session.add(row)
             await session.flush()
-            return SpendResult(SpendOutcome.SPENT, row.id, balance - amount)
+            return SpendResult(SpendOutcome.SPENT, row.id, available - amount)
 
     async def refund(self, user_id: UUID, analysis_id: UUID, spend_id: UUID) -> RefundOutcome:
         """Compatibility wrapper that delegates to the safe analysis-aware boundary."""

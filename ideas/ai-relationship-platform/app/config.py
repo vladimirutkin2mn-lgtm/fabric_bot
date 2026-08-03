@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, SecretStr, field_validator
+from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +42,34 @@ class Settings(BaseSettings):
     product_analysis_pack_5_price_minor: int = Field(default=69_900, gt=0)
     product_subscription_monthly_price_minor: int = Field(default=99_000, gt=0)
     product_subscription_monthly_credits: int = Field(default=30, ge=1)
+    billing_enabled: bool = False
+    billing_kill_switch: bool = False
+    yookassa_enabled: bool = False
+    stripe_enabled: bool = False
+    subscriptions_enabled: bool = False
+    refunds_enabled: bool = False
+    yookassa_recurring_enabled: bool = False
+    yookassa_shop_id: SecretStr = Field(default=SecretStr(""), repr=False)
+    yookassa_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
+    yookassa_receipt_email: str = ""
+    yookassa_vat_code: int = Field(default=1, ge=1, le=6)
+    yookassa_webhook_ip_allowlist: str = ""
+    billing_trusted_proxies: str = ""
+    stripe_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
+    stripe_webhook_secret: SecretStr = Field(default=SecretStr(""), repr=False)
+    stripe_portal_url: str = ""
+    stripe_price_analysis_single_eur: str = ""
+    stripe_price_analysis_single_usd: str = ""
+    stripe_price_analysis_pack_5_eur: str = ""
+    stripe_price_analysis_pack_5_usd: str = ""
+    stripe_price_subscription_monthly_eur: str = ""
+    stripe_price_subscription_monthly_usd: str = ""
+    billing_worker_lease_seconds: int = Field(default=60, gt=0)
+    billing_worker_max_attempts: int = Field(default=10, ge=1)
+    billing_retry_base_seconds: int = Field(default=30, gt=0)
+    billing_reconciliation_interval_seconds: int = Field(default=900, gt=0)
+    subscription_grace_period_days: int = Field(default=3, ge=0)
+    billing_consent_version: str = "billing-v1"
 
     @field_validator("payment_currency")
     @classmethod
@@ -56,6 +84,55 @@ class Settings(BaseSettings):
         if not value.startswith(("http://", "https://")):
             raise ValueError("payment public base URL must be HTTP(S)")
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def validate_production_billing(self) -> "Settings":
+        """Fail closed without exposing any secret values in the error."""
+        if self.yookassa_recurring_enabled and not self.yookassa_enabled:
+            raise ValueError("YooKassa recurring requires YooKassa")
+        if self.refunds_enabled and not self.billing_enabled:
+            raise ValueError("refunds require billing")
+        if self.app_env != "production":
+            return self
+        if self.billing_enabled and not self.payment_public_base_url.startswith("https://"):
+            raise ValueError("production billing requires an HTTPS public URL")
+        if self.billing_enabled and self.payment_provider == "mock":
+            raise ValueError("mock payment provider is forbidden in production")
+        if self.yookassa_enabled and not (
+            self.yookassa_shop_id.get_secret_value()
+            and self.yookassa_secret_key.get_secret_value()
+            and self.yookassa_receipt_email
+        ):
+            raise ValueError("YooKassa configuration is incomplete")
+        stripe_key = self.stripe_secret_key.get_secret_value()
+        if self.stripe_enabled and not (
+            stripe_key and self.stripe_webhook_secret.get_secret_value()
+        ):
+            raise ValueError("Stripe configuration is incomplete")
+        if self.stripe_enabled and stripe_key.startswith(("sk_test_", "rk_test_")):
+            raise ValueError("Stripe test credentials are forbidden in production")
+        if self.subscriptions_enabled and not (
+            self.stripe_price_subscription_monthly_eur
+            or self.stripe_price_subscription_monthly_usd
+            or self.yookassa_recurring_enabled
+        ):
+            raise ValueError("subscriptions require a configured offer")
+        return self
+
+    def permits_new_checkout(self) -> bool:
+        return self.billing_enabled and not self.billing_kill_switch
+
+    def permits_renewal(self) -> bool:
+        return self.permits_new_checkout() and self.subscriptions_enabled
+
+    def permits_refund(self) -> bool:
+        return self.billing_enabled and self.refunds_enabled and not self.billing_kill_switch
+
+    def permits_webhook_receipt(self) -> bool:
+        return self.billing_enabled
+
+    def permits_reconciliation(self) -> bool:
+        return self.billing_enabled
 
     @property
     def webhook_enabled(self) -> bool:
