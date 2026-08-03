@@ -7,6 +7,8 @@ from pydantic import SecretStr
 
 from app.config import Settings
 
+pytest_plugins = ("tests.payment_postgres_helpers",)
+
 # Application modules expose an ASGI entry point at import time. Provide isolated,
 # non-production values so test collection never depends on a developer's .env file.
 os.environ.update(

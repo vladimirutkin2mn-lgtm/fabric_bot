@@ -15,7 +15,6 @@ from app.providers.payments.gateway import CreateCheckout, HostedCheckout
 from app.services.checkout_service import CheckoutService
 
 pytestmark = pytest.mark.postgres
-pytest_plugins = ("tests.payment_postgres_helpers",)
 
 
 class IdempotentGateway:

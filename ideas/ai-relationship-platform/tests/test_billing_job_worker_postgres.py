@@ -17,7 +17,6 @@ from tests.payment_postgres_helpers import (
 )
 
 pytestmark = pytest.mark.postgres
-pytest_plugins = ("tests.payment_postgres_helpers",)
 
 
 async def test_stale_claim_cannot_complete_but_replacement_completes_once(
@@ -78,3 +77,24 @@ async def test_unsupported_job_manual_review_then_valid_job_runs(
         good_row = await session.get(PaymentOrder, good_order)
     assert bad_row is not None and bad_row.status == "manual_review"
     assert good_row is not None and good_row.status == "completed"
+
+
+async def test_retry_exhaustion_manual_reviews_order_and_clears_receipt(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    _, order_id = await create_order(payment_db, checkout_id="retry-exhausted")
+    job_id, claim_id, _ = await create_claimed_job(payment_db, order_id)
+    async with payment_db.begin() as session:
+        order = await session.get(PaymentOrder, order_id)
+        assert order is not None
+        order.encrypted_receipt_contact = b"encrypted-placeholder"
+    worker = BillingJobWorker(payment_db, {}, PaymentCompletionService(payment_db), max_attempts=1)
+    await worker._retry(job_id, claim_id, "provider_unknown")
+    async with payment_db() as session:
+        job = await session.get(BillingJob, job_id)
+        order = await session.get(PaymentOrder, order_id)
+    assert job is not None and job.status == "manual_review"
+    assert job.last_error_code == "retry_exhausted"
+    assert order is not None and order.status == "manual_review"
+    assert order.failure_code == "retry_exhausted"
+    assert order.encrypted_receipt_contact is None

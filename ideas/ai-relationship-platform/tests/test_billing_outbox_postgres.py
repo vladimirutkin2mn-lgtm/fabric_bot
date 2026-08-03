@@ -11,7 +11,6 @@ from app.db.models import BillingOutboxEvent
 from app.services.billing_outbox_service import BillingOutboxWorker
 
 pytestmark = pytest.mark.postgres
-pytest_plugins = ("tests.payment_postgres_helpers",)
 
 
 class BlockingAnalytics:

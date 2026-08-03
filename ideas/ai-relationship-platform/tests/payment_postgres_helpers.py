@@ -6,7 +6,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.db.base import Base
 from app.db.models import BillingJob, PaymentOrder, ProviderWebhookEvent, User
@@ -18,14 +24,26 @@ async def payment_db() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
-    engine = create_async_engine(url)
+    schema = f"payment_test_{uuid4().hex}"
+    # The generated identifier is restricted to this exact safe alphabet/shape.
+    if not schema.startswith("payment_test_") or not schema.replace("_", "").isalnum():
+        raise RuntimeError("invalid generated test schema")
+    admin = create_async_engine(url)
+    await _schema_sql(admin, f'CREATE SCHEMA "{schema}"')
+    engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
+        await _schema_sql(admin, f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await admin.dispose()
+
+
+async def _schema_sql(engine: AsyncEngine, statement: str) -> None:
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
-        await connection.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
+        await connection.execute(text(statement))
 
 
 class FakeGateway:

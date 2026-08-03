@@ -12,7 +12,6 @@ from app.services.webhook_inbox_service import WebhookInboxService
 from tests.payment_postgres_helpers import create_order, paid
 
 pytestmark = pytest.mark.postgres
-pytest_plugins = ("tests.payment_postgres_helpers",)
 
 
 async def test_ten_duplicate_deliveries_create_one_event_and_job(

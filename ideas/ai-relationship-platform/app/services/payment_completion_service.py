@@ -1,9 +1,11 @@
 """Exactly-once completion from normalized authoritative provider state."""
 
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -18,6 +20,32 @@ from app.db.models import (
 from app.providers.payments.gateway import AuthoritativePayment
 
 
+def postgres_constraint_name(error: BaseException) -> str | None:
+    """Extract an exact driver-provided constraint identifier without message parsing."""
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        direct = getattr(current, "constraint_name", None)
+        if isinstance(direct, str) and direct.isidentifier():
+            return direct
+        diag = getattr(current, "diag", None)
+        diagnosed = getattr(diag, "constraint_name", None)
+        if isinstance(diagnosed, str) and diagnosed.isidentifier():
+            return diagnosed
+        for nested in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return None
+
+
 class PaymentCompletionService:
     def __init__(
         self, sessions: async_sessionmaker[AsyncSession], production: bool = False
@@ -28,7 +56,7 @@ class PaymentCompletionService:
         try:
             return await self._complete(order_id, payment)
         except IntegrityError as exc:
-            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            constraint = postgres_constraint_name(exc)
             if constraint not in self._known_identity_constraints():
                 raise
             return await self._resolve_identity_conflict(order_id, payment.payment_id)
@@ -39,7 +67,7 @@ class PaymentCompletionService:
             if initial is None:
                 return "order_not_found"
             await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
-            order = await session.get(PaymentOrder, order_id, with_for_update=True)
+            order = await self._lock_order(session, order_id)
             assert order is not None
             if order.status == "completed" and order.provider_payment_id == payment_id:
                 return "already_completed"
@@ -100,7 +128,7 @@ class PaymentCompletionService:
                 await session.scalar(
                     select(User).where(User.id == initial.user_id).with_for_update()
                 )
-                order = await session.get(PaymentOrder, order_id, with_for_update=True)
+                order = await self._lock_order(session, order_id)
                 assert order is not None
                 outcome = await self._apply_locked(session, order, payment)
                 manual = self._is_manual_review_outcome(outcome)
@@ -116,7 +144,7 @@ class PaymentCompletionService:
                     event.processed_at = datetime.now(UTC)
                 return outcome
         except IntegrityError as exc:
-            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            constraint = postgres_constraint_name(exc)
             if constraint not in self._known_identity_constraints():
                 raise
             return await self._resolve_claimed_identity_conflict(
@@ -129,7 +157,7 @@ class PaymentCompletionService:
             if initial is None:
                 return "order_not_found"
             await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
-            order = await session.get(PaymentOrder, order_id, with_for_update=True)
+            order = await self._lock_order(session, order_id)
             assert order is not None
             return await self._apply_locked(session, order, payment)
 
@@ -157,7 +185,7 @@ class PaymentCompletionService:
             if payment.status in {"failed", "canceled", "cancelled", "expired"}:
                 order.status, order.failure_code = "failed", f"provider_{payment.status}"
                 order.encrypted_receipt_contact = None
-                self._outbox(session, order, "payment_failed")
+                await self._outbox(session, order, "payment_failed")
                 return "failed"
             order.provider_status = payment.provider_status or payment.status
             return "pending"
@@ -186,7 +214,7 @@ class PaymentCompletionService:
                 external_payment_id=payment.payment_id,
             )
         )
-        self._outbox(session, order, "purchase_completed")
+        await self._outbox(session, order, "purchase_completed")
         return "completed"
 
     async def _manual_review_locked(
@@ -200,7 +228,7 @@ class PaymentCompletionService:
         initial = await session.get(PaymentOrder, order_id)
         if initial is not None:
             await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
-        order = await session.get(PaymentOrder, order_id, with_for_update=True)
+        order = await self._lock_order(session, order_id)
         if order is not None and order.status in {"creating", "pending"}:
             order.status, order.failure_code = "manual_review", code
             order.encrypted_receipt_contact = None
@@ -231,7 +259,7 @@ class PaymentCompletionService:
                 job.status, job.claim_id = "manual_review", None
                 return "manual_review"
             await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
-            order = await session.get(PaymentOrder, order_id, with_for_update=True)
+            order = await self._lock_order(session, order_id)
             assert order is not None
             if order.status == "completed" and order.provider_payment_id == payment_id:
                 outcome = "already_completed"
@@ -283,17 +311,48 @@ class PaymentCompletionService:
         return None
 
     @staticmethod
-    def _outbox(session: AsyncSession, order: PaymentOrder, event: str) -> None:
-        session.add(
-            BillingOutboxEvent(
+    async def _lock_order(session: AsyncSession, order_id: UUID) -> PaymentOrder | None:
+        return cast(
+            PaymentOrder | None,
+            await session.scalar(
+                select(PaymentOrder)
+                .where(PaymentOrder.id == order_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ),
+        )
+
+    @staticmethod
+    async def _outbox(session: AsyncSession, order: PaymentOrder, event: str) -> None:
+        payload = {
+            "product_code": order.product_code,
+            "provider": order.provider,
+            "credits": order.credits,
+        }
+        key = f"{event}:{order.id}"
+        inserted = await session.scalar(
+            insert(BillingOutboxEvent)
+            .values(
                 aggregate_type="payment_order",
                 aggregate_id=str(order.id),
                 event_type=event,
-                payload={
-                    "product_code": order.product_code,
-                    "provider": order.provider,
-                    "credits": order.credits,
-                },
-                idempotency_key=f"{event}:{order.id}",
+                payload=payload,
+                idempotency_key=key,
+                status="pending",
+                attempt_count=0,
             )
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+            .returning(BillingOutboxEvent.id)
         )
+        if inserted is None:
+            existing = await session.scalar(
+                select(BillingOutboxEvent).where(BillingOutboxEvent.idempotency_key == key)
+            )
+            if (
+                existing is None
+                or existing.aggregate_type != "payment_order"
+                or existing.aggregate_id != str(order.id)
+                or existing.event_type != event
+                or existing.payload != payload
+            ):
+                raise RuntimeError("billing outbox idempotency mismatch")

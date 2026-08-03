@@ -11,7 +11,6 @@ from app.services.payment_completion_service import PaymentCompletionService
 from tests.payment_postgres_helpers import create_claimed_job, create_order, paid
 
 pytestmark = pytest.mark.postgres
-pytest_plugins = ("tests.payment_postgres_helpers",)
 
 
 async def test_ten_claimed_completions_grant_one_purchase(
@@ -116,3 +115,48 @@ async def test_already_manual_review_keeps_job_and_event_manual(
     )
     assert job is not None and job.status == "manual_review"
     assert event is not None and event.status == "manual_review"
+
+
+async def test_two_orders_same_payment_identity_leave_one_manual_review(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    _, first_id = await create_order(payment_db, checkout_id="checkout-identity-a")
+    _, second_id = await create_order(payment_db, checkout_id="checkout-identity-b")
+    first_job = await create_claimed_job(payment_db, first_id)
+    second_job = await create_claimed_job(payment_db, second_id)
+    service = PaymentCompletionService(payment_db)
+    results = await asyncio.gather(
+        service.complete_claimed(
+            first_job[0],
+            first_job[1],
+            first_id,
+            paid(first_id, "checkout-identity-a", "shared-payment"),
+        ),
+        service.complete_claimed(
+            second_job[0],
+            second_job[1],
+            second_id,
+            paid(second_id, "checkout-identity-b", "shared-payment"),
+        ),
+    )
+    assert sorted(results) == ["completed", "manual_review"]
+    async with payment_db() as session:
+        orders = list(
+            await session.scalars(
+                select(PaymentOrder).where(PaymentOrder.id.in_([first_id, second_id]))
+            )
+        )
+        purchases = await session.scalar(
+            select(func.count())
+            .select_from(CreditTransaction)
+            .where(CreditTransaction.payment_order_id.in_([first_id, second_id]))
+        )
+        outbox = await session.scalar(
+            select(func.count())
+            .select_from(BillingOutboxEvent)
+            .where(BillingOutboxEvent.event_type == "purchase_completed")
+        )
+    assert {order.status for order in orders} == {"completed", "manual_review"}
+    reviewed = next(order for order in orders if order.status == "manual_review")
+    assert reviewed.failure_code == "payment_identity_reused"
+    assert purchases == 1 and outbox == 1
