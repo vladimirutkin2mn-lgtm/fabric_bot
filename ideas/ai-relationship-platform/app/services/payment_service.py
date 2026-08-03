@@ -79,9 +79,7 @@ class PaymentService:
         attempt_id = uuid4()
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
-            user = await session.scalar(
-                select(User).where(User.id == user_id).with_for_update()
-            )
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             if user is None:
                 return CheckoutResult(CheckoutOutcome.USER_NOT_FOUND)
 
@@ -141,9 +139,7 @@ class PaymentService:
         try:
             checkout = await self._provider.create_checkout(request)
         except asyncio.CancelledError:
-            await asyncio.shield(
-                self._mark_creation_failed(request.order_id, attempt_id)
-            )
+            await asyncio.shield(self._mark_creation_failed(request.order_id, attempt_id))
             raise
         except Exception:
             await self._mark_creation_failed(request.order_id, attempt_id)
@@ -274,11 +270,7 @@ class PaymentService:
                     CreditTransaction.payment_order_id != order.id,
                 )
             )
-            if (
-                payment_owner is not None
-                or event_owner is not None
-                or ledger_owner is not None
-            ):
+            if payment_owner is not None or event_owner is not None or ledger_owner is not None:
                 return PaymentCompletionOutcome.PAYMENT_MISMATCH, None
 
             order.status = "completed"
@@ -303,9 +295,7 @@ class PaymentService:
 
     @staticmethod
     def _is_payment_identity_conflict(exc: IntegrityError) -> bool:
-        constraint_name = getattr(
-            getattr(exc.orig, "diag", None), "constraint_name", None
-        )
+        constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
         return constraint_name in {
             "payment_orders_provider_payment_id_key",
             "payment_orders_provider_event_id_key",
@@ -323,9 +313,7 @@ class PaymentService:
                 ),
             )
 
-    async def _track(
-        self, user_id: UUID, event: str, properties: dict[str, str]
-    ) -> None:
+    async def _track(self, user_id: UUID, event: str, properties: dict[str, str]) -> None:
         try:
             await self._analytics.track(str(user_id), event, properties)
         except Exception:
