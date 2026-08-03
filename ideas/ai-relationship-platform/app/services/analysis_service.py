@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -49,6 +50,12 @@ class AnalysisServiceResult:
     result: AnalysisResult | None = None
     failure_code: str | None = None
     idempotent: bool = False
+
+
+class AnalysisRunner(Protocol):
+    """Narrow bot-facing analysis boundary implemented by AnalysisService and fakes."""
+
+    async def analyze(self, analysis_id: UUID, user_id: UUID) -> AnalysisServiceResult: ...
 
 
 class AnalysisService:

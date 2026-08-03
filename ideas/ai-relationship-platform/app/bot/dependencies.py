@@ -59,7 +59,7 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
             data["analysis_service"] = create_analysis_service(
                 self._settings, analyses, self._llm, self._analytics
             )
-            data["reports"] = ReportService(analyses, ReportRenderer())
+            data["reports"] = ReportService(analyses, ReportRenderer(), self._analytics)
             data["analysis_repository"] = analyses
             data["analytics"] = self._analytics
             return await handler(event, data)

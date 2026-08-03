@@ -31,6 +31,9 @@ class StubLLMClient:
     def __init__(self, model: str = "stub", behavior: StubBehavior = "success") -> None:
         self.model, self.behavior, self.calls = model, behavior, 0
 
+    async def aclose(self) -> None:
+        return None
+
     async def generate_analysis(self, request: LLMRequest) -> LLMCompletion:
         self.calls += 1
         if self.behavior == "timeout":

@@ -77,6 +77,8 @@ def chunk_text(
     text: str, target: int = CHUNK_TARGET, hard_limit: int = TELEGRAM_LIMIT
 ) -> tuple[str, ...]:
     """Split deterministically at section/paragraph/line/space boundaries without loss."""
+    if target <= 0 or hard_limit <= 0 or target > hard_limit:
+        raise ValueError("invalid_chunk_limits")
     if not text:
         return ()
     chunks: list[str] = []
@@ -185,3 +187,13 @@ class ReportRenderer:
             + ("\n\n".join(replies) or "Подходящих вариантов ответа в сохранённом отчёте нет.")
         )
         return RenderedReport(chunk_text("\n\n".join(sections)))
+
+    def render_replies(self, result: AnalysisResult) -> RenderedReport:
+        """Render only already-persisted suggestions without invoking a provider."""
+        replies = [
+            f"{i}. Стиль: {REPLY_STYLE_LABELS[item.style]}\n«{item.text}»\n"
+            f"Почему подходит: {item.why_it_fits}"
+            for i, item in enumerate(result.reply_suggestions[:3], 1)
+        ]
+        text = "\n\n".join(replies) or "В сохранённом отчёте нет вариантов ответа."
+        return RenderedReport(chunk_text(text))

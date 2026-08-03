@@ -23,8 +23,8 @@ from app.bot.keyboards import (
 from app.bot.report_delivery import deliver_report
 from app.bot.states import IntakeStates, OnboardingStates
 from app.db.models import Analysis
-from app.repositories.analyses import DeletionOutcome, FeedbackOutcome, SqlAlchemyAnalysisRepository
-from app.services.analysis_service import AnalysisService, AnalysisServiceStatus
+from app.repositories.analyses import DeletionOutcome, FeedbackOutcome
+from app.services.analysis_service import AnalysisRunner, AnalysisServiceStatus
 from app.services.conversation_intake import ConversationIntakeService, InvalidTransition
 from app.services.conversation_parser import ConversationRejected
 from app.services.onboarding import (
@@ -314,7 +314,8 @@ async def choose_stage(
     state: FSMContext,
     onboarding: OnboardingService,
     intake: ConversationIntakeService,
-    analysis_service: AnalysisService | None = None,
+    analysis_service: AnalysisRunner,
+    reports: ReportService,
 ) -> None:
     parts = _callback_parts(callback)
     analysis = await _owned(callback, onboarding, intake, parts[2] if len(parts) > 2 else "")
@@ -328,16 +329,21 @@ async def choose_stage(
     await callback.answer()
     await state.clear()
     if isinstance(callback.message, Message):
-        if analysis_service is None:
-            await callback.message.answer(texts.DRAFT_READY, reply_markup=main_menu_keyboard())
-            return
         await callback.message.answer(texts.PROCESSING)
         outcome = await analysis_service.analyze(completed.id, completed.user_id)
         if outcome.status is AnalysisServiceStatus.COMPLETED and outcome.result is not None:
             from app.services.report_renderer import ReportRenderer
 
-            await deliver_report(
-                callback.message, completed.id, ReportRenderer().render(outcome.result)
+            report = ReportRenderer().render(outcome.result)
+            await deliver_report(callback.message, completed.id, report)
+            await reports.event(
+                completed.user_id,
+                "analysis_report_delivered",
+                {
+                    "analysis_id": str(completed.id),
+                    "source": "immediate",
+                    "chunk_count_bucket": str(min(len(report.chunks), 4)),
+                },
             )
         elif outcome.status is AnalysisServiceStatus.ALREADY_PROCESSING:
             await callback.message.answer("Этот разбор уже выполняется.")
@@ -431,16 +437,18 @@ async def _show_history(
     await callback.answer()
     if user is None or not isinstance(callback.message, Message):
         return
-    items, has_next = await reports.repository.list_completed(user.id, page)
+    history_page = await reports.history(user.id, page)
     labels = [
         (
-            item.id,
+            item.analysis_id,
             f"{item.completed_at:%d.%m.%Y} · {RELATIONSHIP_STAGE_LABELS.get(item.relationship_stage or '', 'Стадия не указана')}",
         )
-        for item in items
+        for item in history_page.items
     ]
-    text = "Завершённых разборов пока нет." if not items else "Ваши завершённые разборы:"
-    await callback.message.answer(text, reply_markup=history_keyboard(labels, page, has_next))
+    text = "Завершённых разборов пока нет." if not labels else "Ваши завершённые разборы:"
+    await callback.message.answer(
+        text, reply_markup=history_keyboard(labels, history_page.page, history_page.has_next)
+    )
 
 
 @router.callback_query(F.data == "menu:history")
@@ -487,6 +495,20 @@ async def open_history(
             loaded.report,
             feedback_exists=loaded.analysis.feedback_score is not None,
         )
+        await reports.event(
+            loaded.analysis.user_id,
+            "analysis_history_opened",
+            {"analysis_id": str(loaded.analysis.id)},
+        )
+        await reports.event(
+            loaded.analysis.user_id,
+            "analysis_report_delivered",
+            {
+                "analysis_id": str(loaded.analysis.id),
+                "source": "history",
+                "chunk_count_bucket": str(min(len(loaded.report.chunks), 4)),
+            },
+        )
     else:
         await callback.message.answer(
             texts.REPORT_CORRUPTED
@@ -502,24 +524,35 @@ async def replies(
     loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.result:
-            values = loaded.result.reply_suggestions
-            await callback.message.answer(
-                "\n\n".join(
-                    f"{i}. {item.text}\nПочему подходит: {item.why_it_fits}"
-                    for i, item in enumerate(values, 1)
-                )
-                or "В сохранённом отчёте нет вариантов ответа."
+        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.result and loaded.analysis:
+            rendered = reports.render_replies(loaded.result)
+            for chunk in rendered.chunks:
+                await callback.message.answer(chunk)
+            await reports.event(
+                loaded.analysis.user_id,
+                "reply_suggestions_requested",
+                {"analysis_id": str(loaded.analysis.id)},
             )
         else:
             await callback.message.answer(texts.REPORT_UNAVAILABLE)
 
 
 @router.callback_query(F.data.startswith("report:followup:"))
-async def followup(callback: CallbackQuery) -> None:
+async def followup(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        await callback.message.answer(texts.FOLLOWUP_UNAVAILABLE)
+        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.analysis:
+            await callback.message.answer(texts.FOLLOWUP_UNAVAILABLE)
+            await reports.event(
+                loaded.analysis.user_id,
+                "followup_requested",
+                {"analysis_id": str(loaded.analysis.id)},
+            )
+        else:
+            await callback.message.answer(texts.REPORT_UNAVAILABLE)
 
 
 @router.callback_query(F.data.startswith("report:new_fragment:"))
@@ -543,38 +576,53 @@ async def new_fragment(
 
 
 @router.callback_query(F.data.startswith("report:delete_prompt:"))
-async def delete_prompt(callback: CallbackQuery) -> None:
+async def delete_prompt(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        await callback.message.answer(
-            "Удалить этот разбор и его содержимое?",
-            reply_markup=deletion_keyboard(_callback_parts(callback)[-1]),
-        )
+        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.analysis:
+            await callback.message.answer(
+                "Удалить этот разбор и его содержимое?",
+                reply_markup=deletion_keyboard(loaded.analysis.id),
+            )
+        else:
+            await callback.message.answer(texts.REPORT_UNAVAILABLE)
 
 
 @router.callback_query(F.data.startswith("report:delete_cancel:"))
-async def delete_cancel(callback: CallbackQuery) -> None:
+async def delete_cancel(
+    callback: CallbackQuery, onboarding: OnboardingService, reports: ReportService
+) -> None:
+    loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        await callback.message.answer("Удаление отменено.")
+        await callback.message.answer(
+            "Удаление отменено."
+            if loaded and loaded.status is ReportStatus.COMPLETED
+            else texts.REPORT_UNAVAILABLE
+        )
 
 
 @router.callback_query(F.data.startswith("report:delete_confirm:"))
 async def delete_confirm(
     callback: CallbackQuery,
     onboarding: OnboardingService,
-    analysis_repository: SqlAlchemyAnalysisRepository,
+    reports: ReportService,
 ) -> None:
-    user = await onboarding.current_user(callback.from_user.id)
-    try:
-        analysis_id = UUID(_callback_parts(callback)[-1])
-    except (ValueError, IndexError):
-        analysis_id = None
-    outcome = (
-        DeletionOutcome.NOT_FOUND
-        if user is None or analysis_id is None
-        else await analysis_repository.delete_owned(analysis_id, user.id)
-    )
+    loaded = await _load_report(callback, onboarding, reports)
+    outcome = DeletionOutcome.NOT_FOUND
+    if (
+        loaded
+        and loaded.analysis
+        and loaded.status
+        in {
+            ReportStatus.COMPLETED,
+            ReportStatus.DELETED,
+        }
+    ):
+        outcome = await reports.delete(loaded.analysis.id, loaded.analysis.user_id)
     await callback.answer()
     if isinstance(callback.message, Message):
         await callback.message.answer(
@@ -589,7 +637,7 @@ async def delete_confirm(
 async def feedback(
     callback: CallbackQuery,
     onboarding: OnboardingService,
-    analysis_repository: SqlAlchemyAnalysisRepository,
+    reports: ReportService,
 ) -> None:
     user = await onboarding.current_user(callback.from_user.id)
     parts = _callback_parts(callback)
@@ -597,11 +645,9 @@ async def feedback(
         analysis_id, score = UUID(parts[1]), int(parts[2])
     except (ValueError, IndexError):
         analysis_id, score = None, 0
-    outcome = (
-        FeedbackOutcome.NOT_FOUND
-        if user is None or analysis_id is None
-        else await analysis_repository.record_feedback(analysis_id, user.id, score)
-    )
+    outcome = FeedbackOutcome.NOT_FOUND
+    if user is not None and analysis_id is not None:
+        outcome = await reports.feedback(analysis_id, user.id, score)
     await callback.answer(
         "Спасибо за оценку."
         if outcome in {FeedbackOutcome.RECORDED, FeedbackOutcome.ALREADY_RECORDED}

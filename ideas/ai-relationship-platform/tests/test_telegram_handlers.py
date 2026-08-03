@@ -18,9 +18,42 @@ from app.bot import texts
 from app.bot.handlers import placeholder, router, start
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
 from app.db.models import Analysis, User
+from app.domain.analysis import AnalysisResult
+from app.services.analysis_service import AnalysisServiceResult, AnalysisServiceStatus
 from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.onboarding import CURRENT_CONSENT_VERSION, OnboardingService, TelegramIdentity
+from app.services.report_renderer import ReportRenderer
+from app.services.report_service import ReportRepository, ReportService
+
+
+class CompletedRunner:
+    async def analyze(self, analysis_id: UUID, user_id: UUID) -> AnalysisServiceResult:
+        payload = {
+            "quality": {"sufficient": True, "issues": [], "participants_detected": ["A", "B"]},
+            "summary": "Тестовый вывод.",
+            "dynamic": {"direction": "mixed", "confidence": 0.6},
+            "reciprocity_score": {
+                "value": 50,
+                "positive_signals": [],
+                "negative_signals": [],
+                "limitations": [],
+            },
+            "observations": [
+                {"claim": "Диалог продолжается.", "evidence_refs": ["m1"], "importance": "medium"}
+            ],
+            "hypotheses": [],
+            "unknowns": [],
+            "next_actions": [],
+            "reply_suggestions": [],
+            "safety": {"high_risk_detected": False, "categories": []},
+        }
+        import json
+
+        return AnalysisServiceResult(
+            AnalysisServiceStatus.COMPLETED, AnalysisResult.model_validate_json(json.dumps(payload))
+        )
+
 
 type Harness = tuple[Dispatcher, Bot, "RecordingSession", "MemoryUsers", OnboardingService]
 
@@ -161,6 +194,10 @@ async def harness() -> AsyncGenerator[Harness, None]:
     analyses = MemoryAnalyses()
     dispatcher["intake"] = ConversationIntakeService(
         analyses, ConversationParser(), NoOpAnalytics()
+    )
+    dispatcher["analysis_service"] = CompletedRunner()
+    dispatcher["reports"] = ReportService(
+        cast(ReportRepository, analyses), ReportRenderer(), NoOpAnalytics()
     )
     yield dispatcher, bot, session, users, service
     await bot.session.close()
@@ -310,7 +347,8 @@ async def test_complete_intake_duplicate_callbacks_and_restart_resume(harness: H
     await dispatcher.feed_update(bot, callback_update(stage, 16), onboarding=service, intake=intake)
     await dispatcher.feed_update(bot, callback_update(stage, 17), onboarding=service, intake=intake)
     assert draft.intake_step == "complete" and draft.relationship_stage == "not_provided"
-    assert texts.DRAFT_READY in sent_texts(session)
+    assert texts.PROCESSING in sent_texts(session)
+    assert "Тестовый вывод." in " ".join(sent_texts(session))
 
     second = await intake.start(users.users[42])
     await intake.submit(second, "A: 1\nB: 2\nA: 3\nB: 4")

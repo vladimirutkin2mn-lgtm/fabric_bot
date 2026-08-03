@@ -36,12 +36,14 @@ class FeedbackOutcome(StrEnum):
     NOT_COMPLETED = "not_completed"
     DELETED = "deleted"
     NOT_FOUND = "not_found"
+    INVALID_SCORE = "invalid_score"
 
 
 class DeletionOutcome(StrEnum):
     DELETED = "deleted"
     ALREADY_DELETED = "already_deleted"
     NOT_FOUND = "not_found"
+    NOT_COMPLETED = "not_completed"
 
 
 class LLMMetadata:
@@ -151,7 +153,7 @@ class SqlAlchemyAnalysisRepository:
         self, analysis_id: UUID, user_id: UUID, score: int
     ) -> FeedbackOutcome:
         if score not in range(1, 6):
-            return FeedbackOutcome.NOT_COMPLETED
+            return FeedbackOutcome.INVALID_SCORE
         changed = cast(
             CursorResult[object],
             await self._session.execute(
@@ -185,7 +187,7 @@ class SqlAlchemyAnalysisRepository:
                 .where(
                     Analysis.id == analysis_id,
                     Analysis.user_id == user_id,
-                    Analysis.status != "deleted",
+                    Analysis.status == "completed",
                 )
                 .values(
                     status="deleted",
@@ -207,7 +209,11 @@ class SqlAlchemyAnalysisRepository:
         if changed.rowcount == 1:
             return DeletionOutcome.DELETED
         current = await self.get_owned(analysis_id, user_id)
-        return DeletionOutcome.NOT_FOUND if current is None else DeletionOutcome.ALREADY_DELETED
+        if current is None:
+            return DeletionOutcome.NOT_FOUND
+        if current.status == "deleted":
+            return DeletionOutcome.ALREADY_DELETED
+        return DeletionOutcome.NOT_COMPLETED
 
     async def load_processing(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
         """Load claimed input and close the read transaction before network I/O."""
