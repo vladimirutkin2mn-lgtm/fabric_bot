@@ -21,6 +21,8 @@ class PreviewOutcome(StrEnum):
     ANALYSIS_NOT_FOUND = "analysis_not_found"
     USER_NOT_FOUND = "user_not_found"
     NOT_READY = "not_ready"
+    RELEASED_AFTER_FAILURE = "released_after_failure"
+    RELEASED_AFTER_DELETION = "released_after_deletion"
 
 
 @dataclass(frozen=True)
@@ -53,8 +55,18 @@ class PreviewEntitlementService:
             if analysis is None:
                 return PreviewOutcome.ANALYSIS_NOT_FOUND
             if user.free_preview_analysis_id == analysis_id:
-                if analysis.status in {"deleted", "failed"}:
-                    return PreviewOutcome.NOT_READY
+                if user.free_preview_status == "reserved" and analysis.status in {
+                    "deleted",
+                    "failed",
+                }:
+                    user.free_preview_status = "available"
+                    user.free_preview_analysis_id = None
+                    user.free_preview_used_at = None
+                    return (
+                        PreviewOutcome.RELEASED_AFTER_DELETION
+                        if analysis.status == "deleted"
+                        else PreviewOutcome.RELEASED_AFTER_FAILURE
+                    )
                 return (
                     PreviewOutcome.ALREADY_CONSUMED_SAME_ANALYSIS
                     if user.free_preview_status == "consumed"

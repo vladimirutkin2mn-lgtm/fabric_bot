@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     payment_webhook_secret: SecretStr = Field(default=SecretStr("local-mock-secret"))
     payment_currency: str = "RUB"
     payment_webhook_max_age_seconds: int = Field(default=300, gt=0)
+    checkout_creation_lease_seconds: int = Field(default=60, gt=0)
     product_analysis_single_price_minor: int = Field(default=19_900, gt=0)
     product_analysis_pack_5_price_minor: int = Field(default=69_900, gt=0)
     product_subscription_monthly_price_minor: int = Field(default=99_000, gt=0)

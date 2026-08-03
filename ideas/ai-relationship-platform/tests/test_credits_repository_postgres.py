@@ -195,3 +195,67 @@ async def test_refunded_spend_cannot_grant_full_access(
     async with billing_db() as session:
         analysis = await session.get(Analysis, analyses[0])
         assert analysis is not None and analysis.report_access == "none"
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "expected"),
+    [
+        ("failed", PreviewOutcome.RELEASED_AFTER_FAILURE),
+        ("deleted", PreviewOutcome.RELEASED_AFTER_DELETION),
+    ],
+)
+async def test_terminal_preview_reservation_is_recovered(
+    billing_db: async_sessionmaker[AsyncSession],
+    terminal_status: str,
+    expected: PreviewOutcome,
+) -> None:
+    user_id, analyses = await _user_and_analyses(billing_db, 2)
+    service = PreviewEntitlementService(billing_db)
+    assert await service.reserve_preview(user_id, analyses[0]) is PreviewOutcome.RESERVED
+    async with billing_db.begin() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        assert analysis is not None
+        analysis.status = terminal_status
+        if terminal_status == "failed":
+            analysis.failure_code = "llm_timeout"
+    assert await service.reserve_preview(user_id, analyses[0]) is expected
+    assert await service.reserve_preview(user_id, analyses[1]) is PreviewOutcome.RESERVED
+
+
+async def test_full_access_and_refund_are_mutually_exclusive_under_race(
+    billing_db: async_sessionmaker[AsyncSession],
+) -> None:
+    for iteration in range(25):
+        user_id, analyses = await _user_and_analyses(billing_db, 1)
+        credits = CreditsService(billing_db)
+        previews = PreviewEntitlementService(billing_db)
+        await credits.grant(user_id, 1, f"race:{iteration}:grant")
+        spent = await credits.spend(user_id, analyses[0], 1)
+        assert spent.transaction_id is not None
+        async with billing_db.begin() as session:
+            analysis = await session.get(Analysis, analyses[0])
+            assert analysis is not None
+            analysis.status = "completed"
+            analysis.result_json = payload()
+            analysis.completed_at = datetime.now(UTC)
+
+        class NeverRun:
+            async def analyze(self, analysis_id: UUID, owner_id: UUID) -> AnalysisServiceResult:
+                raise AssertionError("not used")
+
+        service = MonetizedAnalysisService(
+            billing_db, credits, previews, NeverRun(), 1, NoOpAnalyticsClient()
+        )
+        await asyncio.gather(
+            service._set_access(analyses[0], user_id, "full", 1, spent.transaction_id),
+            credits.refund_if_not_full(user_id, analyses[0], spent.transaction_id, 1),
+        )
+        async with billing_db() as session:
+            analysis = await session.get(Analysis, analyses[0])
+            refund_count = await session.scalar(
+                select(func.count())
+                .select_from(CreditTransaction)
+                .where(CreditTransaction.reverses_transaction_id == spent.transaction_id)
+            )
+            assert analysis is not None
+            assert not (analysis.report_access == "full" and refund_count == 1)

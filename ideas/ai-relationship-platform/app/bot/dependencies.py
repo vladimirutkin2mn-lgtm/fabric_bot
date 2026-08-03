@@ -80,6 +80,7 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
                 self._payment_provider,
                 self._analytics,
                 self._settings.payment_provider,
+                self._settings.checkout_creation_lease_seconds,
             )
             data["monetized"] = MonetizedAnalysisService(
                 self._sessions,

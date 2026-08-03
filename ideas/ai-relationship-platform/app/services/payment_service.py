@@ -1,5 +1,6 @@
 """Durable checkout creation and exactly-once payment completion."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -54,9 +55,11 @@ class PaymentService:
         provider: PaymentProvider,
         analytics: AnalyticsClient,
         provider_name: str = "mock",
+        creation_lease_seconds: int = 60,
     ) -> None:
         self._sessions, self._catalog, self._provider = sessions, catalog, provider
         self._analytics, self._provider_name = analytics, provider_name
+        self._creation_lease_seconds = creation_lease_seconds
 
     async def create_checkout(self, user_id: UUID, product_code: str) -> CheckoutResult:
         product = self._catalog.get(product_code)
@@ -102,14 +105,24 @@ class PaymentService:
                     Checkout(order.provider, order.provider_checkout_id, order.checkout_url),
                 )
             elif order.status == "creating":
-                return CheckoutResult(CheckoutOutcome.CREATING, order.id)
+                age = (datetime.now(UTC) - order.updated_at).total_seconds()
+                if age <= self._creation_lease_seconds:
+                    return CheckoutResult(CheckoutOutcome.CREATING, order.id)
+                order.updated_at = datetime.now(UTC)
+                request = CheckoutRequest(
+                    order.id,
+                    order.checkout_token,
+                    order.product_code,
+                    order.amount_minor,
+                    order.currency,
+                )
         try:
             checkout = await self._provider.create_checkout(request)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._mark_creation_failed(request.order_id))
+            raise
         except Exception:
-            async with self._sessions.begin() as session:
-                current = await session.get(PaymentOrder, request.order_id, with_for_update=True)
-                if current and current.status == "creating":
-                    current.status = "failed"
+            await self._mark_creation_failed(request.order_id)
             logger.warning(
                 "checkout_creation_failed order_id=%s provider=%s",
                 request.order_id,
@@ -140,6 +153,12 @@ class PaymentService:
             request.order_id,
             checkout,
         )
+
+    async def _mark_creation_failed(self, order_id: UUID) -> None:
+        async with self._sessions.begin() as session:
+            current = await session.get(PaymentOrder, order_id, with_for_update=True)
+            if current and current.status == "creating":
+                current.status = "failed"
 
     async def complete(self, event: PaymentEvent) -> PaymentCompletionOutcome:
         completed_user: UUID | None = None

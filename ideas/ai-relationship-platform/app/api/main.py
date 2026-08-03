@@ -37,7 +37,12 @@ def create_app(settings: Settings | None = None, engine: AsyncEngine | None = No
     application.state.product_catalog = catalog
     application.state.payment_provider = provider
     application.state.payment_service = PaymentService(
-        sessions, catalog, provider, NoOpAnalyticsClient(), resolved_settings.payment_provider
+        sessions,
+        catalog,
+        provider,
+        NoOpAnalyticsClient(),
+        resolved_settings.payment_provider,
+        resolved_settings.checkout_creation_lease_seconds,
     )
     application.include_router(health_router)
     application.include_router(payments_router)

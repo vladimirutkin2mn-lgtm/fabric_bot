@@ -26,6 +26,7 @@ class RefundOutcome(StrEnum):
     SPEND_NOT_FOUND = "spend_not_found"
     INVALID_SPEND = "invalid_spend"
     AUTHORIZATION_MISMATCH = "authorization_mismatch"
+    ACCESS_ALREADY_GRANTED = "access_already_granted"
 
 
 class GrantOutcome(StrEnum):
@@ -140,6 +141,56 @@ class CreditsService:
                     amount=-spend.amount,
                     idempotency_key=key,
                     analysis_id=spend.analysis_id,
+                    reverses_transaction_id=spend.id,
+                )
+            )
+            return RefundOutcome.REFUNDED
+
+    async def refund_if_not_full(
+        self, user_id: UUID, analysis_id: UUID, spend_id: UUID, expected_cost: int
+    ) -> RefundOutcome:
+        """Refund under the same lock order used to grant full access."""
+        async with self._sessions.begin() as session:
+            analysis = await session.scalar(
+                select(Analysis)
+                .where(Analysis.id == analysis_id, Analysis.user_id == user_id)
+                .with_for_update()
+            )
+            if analysis is None:
+                return RefundOutcome.AUTHORIZATION_MISMATCH
+            spend = await session.scalar(
+                select(CreditTransaction).where(CreditTransaction.id == spend_id).with_for_update()
+            )
+            if (
+                spend is None
+                or spend.user_id != user_id
+                or spend.analysis_id != analysis_id
+                or spend.type != "spend"
+                or spend.amount != -expected_cost
+            ):
+                return RefundOutcome.AUTHORIZATION_MISMATCH
+            if (
+                analysis.status == "completed"
+                and analysis.report_access == "full"
+                and analysis.full_access_transaction_id == spend_id
+                and analysis.cost_units == expected_cost
+            ):
+                return RefundOutcome.ACCESS_ALREADY_GRANTED
+            key = f"refund:{spend.id}"
+            existing = await session.scalar(
+                select(CreditTransaction.id).where(
+                    CreditTransaction.reverses_transaction_id == spend.id
+                )
+            )
+            if existing is not None:
+                return RefundOutcome.ALREADY_REFUNDED
+            session.add(
+                CreditTransaction(
+                    user_id=user_id,
+                    type="refund",
+                    amount=-spend.amount,
+                    idempotency_key=key,
+                    analysis_id=analysis_id,
                     reverses_transaction_id=spend.id,
                 )
             )

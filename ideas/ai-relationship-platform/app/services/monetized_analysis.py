@@ -128,8 +128,9 @@ class MonetizedAnalysisService:
             return await self._refund_result(user_id, analysis_id, spent.transaction_id)
         except asyncio.CancelledError:
             try:
-                if not await self._has_full_access(user_id, analysis_id, spent.transaction_id):
-                    await self._credits.refund(user_id, analysis_id, spent.transaction_id)
+                await self._credits.refund_if_not_full(
+                    user_id, analysis_id, spent.transaction_id, self._price
+                )
             finally:
                 raise
         except Exception:
@@ -166,8 +167,9 @@ class MonetizedAnalysisService:
             )
         except asyncio.CancelledError:
             try:
-                if not await self._has_full_access(user_id, analysis_id, spent.transaction_id):
-                    await self._credits.refund(user_id, analysis_id, spent.transaction_id)
+                await self._credits.refund_if_not_full(
+                    user_id, analysis_id, spent.transaction_id, self._price
+                )
             finally:
                 raise
         except Exception:
@@ -241,9 +243,9 @@ class MonetizedAnalysisService:
         spend_id: UUID,
         result: AnalysisResult | None = None,
     ) -> MonetizedAnalysisResult:
-        if await self._has_full_access(user_id, analysis_id, spend_id):
+        refund = await self._credits.refund_if_not_full(user_id, analysis_id, spend_id, self._price)
+        if refund is RefundOutcome.ACCESS_ALREADY_GRANTED:
             return MonetizedAnalysisResult(MonetizedStatus.FULL_COMPLETED, result)
-        refund = await self._credits.refund(user_id, analysis_id, spend_id)
         if refund is RefundOutcome.REFUNDED:
             status = MonetizedStatus.TECHNICAL_FAILURE_REFUNDED
             await self._track(user_id, "credit_refunded", analysis_id)
@@ -252,19 +254,6 @@ class MonetizedAnalysisService:
         else:
             status = MonetizedStatus.TECHNICAL_FAILURE_REFUND_FAILED
         return MonetizedAnalysisResult(status)
-
-    async def _has_full_access(self, user_id: UUID, analysis_id: UUID, spend_id: UUID) -> bool:
-        async with self._sessions() as session:
-            analysis = await session.scalar(
-                select(Analysis).where(Analysis.id == analysis_id, Analysis.user_id == user_id)
-            )
-            return bool(
-                analysis is not None
-                and analysis.status == "completed"
-                and analysis.report_access == "full"
-                and analysis.cost_units == self._price
-                and analysis.full_access_transaction_id == spend_id
-            )
 
     async def _track(self, user_id: UUID, event: str, analysis_id: UUID) -> None:
         try:
