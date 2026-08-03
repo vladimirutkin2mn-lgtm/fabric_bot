@@ -13,6 +13,7 @@ dependencies = [
   "alembic>=1.16,<2",
   "asyncpg>=0.30,<1",
   "fastapi>=0.115,<1",
+  "openai>=1.99,<3",
   "pydantic-settings>=2.9,<3",
   "sqlalchemy[asyncio]>=2.0.41,<3",
   "uvicorn[standard]>=0.34,<1",
@@ -29,6 +30,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"app/prompts" = "app/prompts"
 
 [tool.ruff]
 target-version = "py312"
