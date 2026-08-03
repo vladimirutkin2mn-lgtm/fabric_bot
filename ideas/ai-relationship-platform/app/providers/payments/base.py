@@ -8,6 +8,8 @@ from uuid import UUID
 
 @dataclass(frozen=True)
 class CheckoutRequest:
+    """Provider request whose order ID is the stable checkout idempotency key."""
+
     order_id: UUID
     checkout_token: UUID
     product_code: str
