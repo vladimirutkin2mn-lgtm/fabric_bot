@@ -12,7 +12,9 @@ from app.db.models import Analysis, CreditTransaction, User
 
 class SpendOutcome(StrEnum):
     SPENT = "spent"
-    ALREADY_SPENT = "already_spent"
+    ALREADY_SPENT_ACTIVE = "already_spent_active"
+    ALREADY_SPENT = "already_spent_active"
+    ALREADY_SPENT_REFUNDED = "already_spent_refunded"
     INSUFFICIENT_BALANCE = "insufficient_balance"
     ANALYSIS_NOT_FOUND = "analysis_not_found"
     INVALID_AMOUNT = "invalid_amount"
@@ -91,7 +93,14 @@ class CreditsService:
                     and existing.amount == -amount
                 ):
                     return SpendResult(SpendOutcome.ANALYSIS_NOT_FOUND, balance=balance)
-                return SpendResult(SpendOutcome.ALREADY_SPENT, existing.id, balance)
+                refunded = await session.scalar(
+                    select(CreditTransaction.id).where(
+                        CreditTransaction.reverses_transaction_id == existing.id
+                    )
+                )
+                if refunded is not None:
+                    return SpendResult(SpendOutcome.ALREADY_SPENT_REFUNDED, balance=balance)
+                return SpendResult(SpendOutcome.ALREADY_SPENT_ACTIVE, existing.id, balance)
             if balance < amount:
                 return SpendResult(SpendOutcome.INSUFFICIENT_BALANCE, balance=balance)
             row = CreditTransaction(

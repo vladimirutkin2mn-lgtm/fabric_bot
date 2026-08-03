@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.db.base import Base
 from app.db.models import Analysis, CreditTransaction, User
+from app.providers.analytics import NoOpAnalyticsClient
+from app.services.analysis_service import AnalysisServiceResult
 from app.services.credits_service import CreditsService, RefundOutcome, SpendOutcome
+from app.services.monetized_analysis import AccessOutcome, MonetizedAnalysisService
 from app.services.preview_entitlement import PreviewEntitlementService, PreviewOutcome
 from tests.test_report_service import payload
 
@@ -123,3 +126,72 @@ async def test_preview_finalization_updates_entitlement_and_access_atomically(
         assert analysis is not None and user is not None
         assert analysis.report_access == "preview" and analysis.cost_units == 0
         assert user.free_preview_status == "consumed"
+
+
+async def test_refunded_spend_is_never_returned_as_active(
+    billing_db: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, analyses = await _user_and_analyses(billing_db, 1)
+    service = CreditsService(billing_db)
+    await service.grant(user_id, 1, "refund-regression:grant")
+    spent = await service.spend(user_id, analyses[0], 1)
+    assert spent.outcome is SpendOutcome.SPENT and spent.transaction_id is not None
+    assert (
+        await service.refund(user_id, analyses[0], spent.transaction_id) is RefundOutcome.REFUNDED
+    )
+    retried = await service.spend(user_id, analyses[0], 1)
+    assert retried.outcome is SpendOutcome.ALREADY_SPENT_REFUNDED
+    assert retried.transaction_id is None
+    assert await service.balance(user_id) == 1
+
+
+async def test_preview_completed_before_finalize_resumes_without_new_reservation(
+    billing_db: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, analyses = await _user_and_analyses(billing_db, 1)
+    service = PreviewEntitlementService(billing_db)
+    assert await service.reserve_preview(user_id, analyses[0]) is PreviewOutcome.RESERVED
+    async with billing_db.begin() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        assert analysis is not None
+        analysis.status = "completed"
+        analysis.result_json = payload()
+        analysis.completed_at = datetime.now(UTC)
+    assert (
+        await service.reserve_preview(user_id, analyses[0])
+        is PreviewOutcome.ALREADY_RESERVED_SAME_ANALYSIS
+    )
+    assert await service.finalize_preview(user_id, analyses[0]) is PreviewOutcome.CONSUMED
+
+
+async def test_refunded_spend_cannot_grant_full_access(
+    billing_db: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, analyses = await _user_and_analyses(billing_db, 1)
+    credits = CreditsService(billing_db)
+    previews = PreviewEntitlementService(billing_db)
+    await credits.grant(user_id, 1, "access-regression:grant")
+    spent = await credits.spend(user_id, analyses[0], 1)
+    assert spent.transaction_id is not None
+    assert (
+        await credits.refund(user_id, analyses[0], spent.transaction_id) is RefundOutcome.REFUNDED
+    )
+    async with billing_db.begin() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        assert analysis is not None
+        analysis.status = "completed"
+        analysis.result_json = payload()
+        analysis.completed_at = datetime.now(UTC)
+
+    class NeverRun:
+        async def analyze(self, analysis_id: UUID, owner_id: UUID) -> AnalysisServiceResult:
+            raise AssertionError("LLM must not run")
+
+    monetized = MonetizedAnalysisService(
+        billing_db, credits, previews, NeverRun(), 1, NoOpAnalyticsClient()
+    )
+    outcome = await monetized._set_access(analyses[0], user_id, "full", 1, spent.transaction_id)
+    assert outcome is AccessOutcome.TRANSACTION_MISMATCH
+    async with billing_db() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        assert analysis is not None and analysis.report_access == "none"

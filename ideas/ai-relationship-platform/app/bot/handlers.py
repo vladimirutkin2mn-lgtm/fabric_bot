@@ -14,6 +14,7 @@ from app.bot.keyboards import (
     age_keyboard,
     billing_keyboard,
     cancel_keyboard,
+    checkout_creating_keyboard,
     checkout_keyboard,
     consent_keyboard,
     corrupted_report_keyboard,
@@ -22,6 +23,7 @@ from app.bot.keyboards import (
     history_keyboard,
     main_menu_keyboard,
     participant_keyboard,
+    paywall_keyboard,
     preview_actions_keyboard,
     products_keyboard,
     stage_keyboard,
@@ -475,6 +477,12 @@ async def buy_credits(
     if user is None or not isinstance(callback.message, Message):
         return
     outcome = await payments.create_checkout(user.id, _callback_parts(callback)[-1])
+    if outcome.outcome is CheckoutOutcome.CREATING:
+        await callback.message.answer(
+            "Тестовая оплата уже создаётся. Обновите экран через несколько секунд.",
+            reply_markup=checkout_creating_keyboard(_callback_parts(callback)[-1]),
+        )
+        return
     if (
         outcome.outcome not in {CheckoutOutcome.CREATED, CheckoutOutcome.EXISTING}
         or outcome.checkout is None
@@ -551,8 +559,15 @@ async def billing_action(
 
         await deliver_report(callback.message, analysis_id, ReportRenderer().render(outcome.result))
     elif outcome.status is MonetizedStatus.INSUFFICIENT_CREDITS:
+        preview = await previews.get_preview_state(user.id)
         await callback.message.answer(
-            f"Для полного разбора не хватает кредитов.\n\nСтоимость: {analysis_price}\nБаланс: {outcome.balance or 0}"
+            f"Для полного разбора не хватает кредитов.\n\nСтоимость: {analysis_price}\nБаланс: {outcome.balance or 0}",
+            reply_markup=paywall_keyboard(
+                analysis_id,
+                bool(
+                    preview and preview.analysis_id == analysis_id and preview.status == "consumed"
+                ),
+            ),
         )
     elif outcome.status is MonetizedStatus.ALREADY_PROCESSING:
         await callback.message.answer("Этот разбор уже выполняется.")

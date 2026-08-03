@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Analysis
+from app.db.models import Analysis, CreditTransaction
 from app.domain.analysis import AnalysisResult
 from app.providers.analytics import AnalyticsClient
 from app.services.analysis_service import AnalysisRunner, AnalysisServiceStatus
@@ -191,6 +191,29 @@ class MonetizedAnalysisService:
                 return AccessOutcome.DELETED
             if analysis.status != "completed":
                 return AccessOutcome.NOT_COMPLETED
+            if access == "full":
+                if transaction_id is None:
+                    return AccessOutcome.TRANSACTION_MISMATCH
+                spend = await session.scalar(
+                    select(CreditTransaction)
+                    .where(CreditTransaction.id == transaction_id)
+                    .with_for_update()
+                )
+                if (
+                    spend is None
+                    or spend.user_id != user_id
+                    or spend.analysis_id != analysis_id
+                    or spend.type != "spend"
+                    or spend.amount != -cost
+                ):
+                    return AccessOutcome.TRANSACTION_MISMATCH
+                refund = await session.scalar(
+                    select(CreditTransaction.id)
+                    .where(CreditTransaction.reverses_transaction_id == spend.id)
+                    .with_for_update()
+                )
+                if refund is not None:
+                    return AccessOutcome.TRANSACTION_MISMATCH
             if analysis.report_access == "full":
                 return (
                     AccessOutcome.ALREADY_FULL_SAME_TRANSACTION

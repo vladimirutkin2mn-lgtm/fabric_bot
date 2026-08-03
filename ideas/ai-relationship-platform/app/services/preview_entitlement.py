@@ -52,14 +52,16 @@ class PreviewEntitlementService:
             )
             if analysis is None:
                 return PreviewOutcome.ANALYSIS_NOT_FOUND
-            if analysis.status != "draft" or analysis.intake_step != "complete":
-                return PreviewOutcome.NOT_READY
             if user.free_preview_analysis_id == analysis_id:
+                if analysis.status in {"deleted", "failed"}:
+                    return PreviewOutcome.NOT_READY
                 return (
                     PreviewOutcome.ALREADY_CONSUMED_SAME_ANALYSIS
                     if user.free_preview_status == "consumed"
                     else PreviewOutcome.ALREADY_RESERVED_SAME_ANALYSIS
                 )
+            if analysis.status != "draft" or analysis.intake_step != "complete":
+                return PreviewOutcome.NOT_READY
             if user.free_preview_status != "available":
                 return PreviewOutcome.UNAVAILABLE
             user.free_preview_status, user.free_preview_analysis_id = "reserved", analysis_id
