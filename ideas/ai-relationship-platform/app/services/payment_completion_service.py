@@ -103,13 +103,16 @@ class PaymentCompletionService:
                 order = await session.get(PaymentOrder, order_id, with_for_update=True)
                 assert order is not None
                 outcome = await self._apply_locked(session, order, payment)
-                manual = outcome in {"manual_review", "identity_conflict"}
+                manual = self._is_manual_review_outcome(outcome)
+                job_error = order.failure_code
+                if order.status == "completed" and payment.payment_id != order.provider_payment_id:
+                    job_error = "completed_payment_identity_mismatch"
                 job.status = "manual_review" if manual else "completed"
-                job.last_error_code = order.failure_code if manual else None
+                job.last_error_code = job_error if manual else None
                 job.claim_id, job.lease_until = None, None
                 if event is not None:
                     event.status = "manual_review" if manual else "completed"
-                    event.last_error_code = order.failure_code if manual else None
+                    event.last_error_code = job_error if manual else None
                     event.processed_at = datetime.now(UTC)
                 return outcome
         except IntegrityError as exc:
@@ -254,6 +257,14 @@ class PaymentCompletionService:
             "credit_transactions_payment_order_id_key",
             "credit_transactions_idempotency_key_key",
             "billing_outbox_events_idempotency_key_key",
+        }
+
+    @staticmethod
+    def _is_manual_review_outcome(outcome: str) -> bool:
+        return outcome in {
+            "manual_review",
+            "identity_conflict",
+            "already_manual_review",
         }
 
     def _mismatch(self, order: PaymentOrder, payment: AuthoritativePayment) -> str | None:
