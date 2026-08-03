@@ -88,6 +88,9 @@ class OnboardingService:
         user = await self._users.get_by_telegram_id(telegram_user_id)
         return await self._synchronize_completion(user) if user is not None else OnboardingStep.AGE
 
+    async def current_user(self, telegram_user_id: int) -> User | None:
+        return await self._users.get_by_telegram_id(telegram_user_id)
+
     async def _synchronize_completion(self, user: User) -> OnboardingStep:
         """Keep the persisted convenience flag aligned with current consent rules."""
         step = self.step_for(user)

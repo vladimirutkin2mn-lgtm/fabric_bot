@@ -21,7 +21,7 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher = Dispatcher()
     engine = create_engine(str(settings.database_url))
     dependency_middleware = OnboardingDependencyMiddleware(
-        create_session_factory(engine), NoOpAnalyticsClient()
+        create_session_factory(engine), NoOpAnalyticsClient(), settings
     )
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)
