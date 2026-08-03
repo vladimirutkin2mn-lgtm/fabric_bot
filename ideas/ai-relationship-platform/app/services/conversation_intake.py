@@ -40,6 +40,9 @@ class ConversationIntakeService:
     async def active(self, user_id: UUID) -> Analysis | None:
         return await self._analyses.get_active(user_id)
 
+    async def pending_billing(self, user_id: UUID) -> Analysis | None:
+        return await self._analyses.get_latest_pending_billing(user_id)
+
     async def owned(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
         """Return a draft owned by the user, including complete/deleted drafts."""
         return await self._analyses.get_owned(analysis_id, user_id)

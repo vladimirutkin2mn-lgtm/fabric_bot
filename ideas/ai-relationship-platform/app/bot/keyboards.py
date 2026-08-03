@@ -7,6 +7,7 @@ from uuid import UUID
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot import texts
+from app.domain.products import ProductCatalog
 
 
 def age_keyboard() -> InlineKeyboardMarkup:
@@ -204,3 +205,124 @@ def history_keyboard(
         rows.append(navigation)
     rows.append([InlineKeyboardButton(text="Главное меню", callback_data="report:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def billing_keyboard(
+    analysis_id: UUID, price: int, preview_available: bool
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if preview_available:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Посмотреть бесплатное превью",
+                    callback_data=f"billing:preview:{analysis_id}",
+                )
+            ]
+        )
+    rows.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    text=f"Получить полный отчёт за {price} кредитов",
+                    callback_data=f"billing:full:{analysis_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="Купить кредиты", callback_data="menu:balance")],
+            [InlineKeyboardButton(text="Вернуться в меню", callback_data="report:menu")],
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def products_keyboard(catalog: ProductCatalog) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{product.title} — {product.credits} кр.",
+                callback_data=f"credits:buy:{product.code.value}",
+            )
+        ]
+        for product in catalog.all()
+    ]
+    rows.extend(
+        [
+            [InlineKeyboardButton(text="Обновить баланс", callback_data="credits:refresh")],
+            [InlineKeyboardButton(text="Вернуться в меню", callback_data="report:menu")],
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def checkout_keyboard(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть тестовую оплату", url=url)],
+            [InlineKeyboardButton(text="Обновить баланс", callback_data="credits:refresh")],
+        ]
+    )
+
+
+def checkout_creating_keyboard(product_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Обновить баланс", callback_data="credits:refresh")],
+            [InlineKeyboardButton(text="Повторить", callback_data=f"credits:buy:{product_code}")],
+            [InlineKeyboardButton(text="Вернуться в меню", callback_data="report:menu")],
+        ]
+    )
+
+
+def paywall_keyboard(analysis_id: UUID, preview_available: bool) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="Купить один разбор", callback_data="credits:buy:analysis_single"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Купить пакет из 5 разборов", callback_data="credits:buy:analysis_pack_5"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Купить месячное начисление", callback_data="credits:buy:subscription_monthly"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Обновить баланс", callback_data=f"billing:refresh:{analysis_id}"
+            )
+        ],
+    ]
+    if preview_available:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Вернуться к превью", callback_data=f"history:open:{analysis_id}"
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Вернуться в меню", callback_data="report:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def preview_actions_keyboard(analysis_id: UUID, price: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Открыть полный отчёт за {price} кредитов",
+                    callback_data=f"billing:unlock:{analysis_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="Купить кредиты", callback_data="menu:balance")],
+            [
+                InlineKeyboardButton(
+                    text="Удалить разбор", callback_data=f"report:delete_prompt:{analysis_id}"
+                )
+            ],
+            [InlineKeyboardButton(text="Вернуться в меню", callback_data="report:menu")],
+        ]
+    )

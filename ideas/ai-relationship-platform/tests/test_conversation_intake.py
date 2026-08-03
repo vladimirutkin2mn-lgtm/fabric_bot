@@ -46,6 +46,18 @@ class MemoryAnalyses:
         item = self.items.get(analysis_id)
         return item if item and item.user_id == user_id else None
 
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None:
+        return next(
+            (
+                item
+                for item in reversed(tuple(self.items.values()))
+                if item.user_id == user_id
+                and item.status == "draft"
+                and item.intake_step == "complete"
+            ),
+            None,
+        )
+
     async def save(self, analysis: Analysis) -> None:
         self.items[analysis.id] = analysis
 

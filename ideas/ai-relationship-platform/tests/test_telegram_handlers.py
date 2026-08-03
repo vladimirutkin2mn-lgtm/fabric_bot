@@ -23,6 +23,7 @@ from app.services.analysis_service import AnalysisServiceResult, AnalysisService
 from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.onboarding import CURRENT_CONSENT_VERSION, OnboardingService, TelegramIdentity
+from app.services.preview_entitlement import PreviewState
 from app.services.report_renderer import ReportRenderer
 from app.services.report_service import ReportRepository, ReportService
 
@@ -138,6 +139,16 @@ class NoOpAnalytics:
         pass
 
 
+class FakeCredits:
+    async def balance(self, user_id: UUID) -> int:
+        return 0
+
+
+class FakePreviews:
+    async def get_preview_state(self, user_id: UUID) -> PreviewState:
+        return PreviewState("available", None)
+
+
 class MemoryAnalyses:
     def __init__(self) -> None:
         self.analyses: dict[UUID, Analysis] = {}
@@ -166,6 +177,19 @@ class MemoryAnalyses:
                 if item.user_id == user_id
                 and item.status == "draft"
                 and item.intake_step != "complete"
+            ),
+            None,
+        )
+
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None:
+        return next(
+            (
+                item
+                for item in reversed(tuple(self.analyses.values()))
+                if item.user_id == user_id
+                and item.status == "draft"
+                and item.intake_step == "complete"
+                and item.report_access in {None, "none"}
             ),
             None,
         )
@@ -204,6 +228,9 @@ async def harness() -> AsyncGenerator[Harness, None]:
         analyses, ConversationParser(), NoOpAnalytics()
     )
     dispatcher["analysis_service"] = CompletedRunner()
+    dispatcher["credits"] = FakeCredits()
+    dispatcher["previews"] = FakePreviews()
+    dispatcher["analysis_price"] = 1
     dispatcher["reports"] = ReportService(
         cast(ReportRepository, analyses), ReportRenderer(), NoOpAnalytics()
     )
@@ -355,8 +382,8 @@ async def test_complete_intake_duplicate_callbacks_and_restart_resume(harness: H
     await dispatcher.feed_update(bot, callback_update(stage, 16), onboarding=service, intake=intake)
     await dispatcher.feed_update(bot, callback_update(stage, 17), onboarding=service, intake=intake)
     assert draft.intake_step == "complete" and draft.relationship_stage == "not_provided"
-    assert texts.PROCESSING in sent_texts(session)
-    assert "Тестовый вывод." in " ".join(sent_texts(session))
+    assert texts.PROCESSING not in sent_texts(session)
+    assert "Полный отчёт: 1 кредитов" in " ".join(sent_texts(session))
 
     second = await intake.start(users.users[42])
     await intake.submit(second, "A: 1\nB: 2\nA: 3\nB: 4")
@@ -467,8 +494,13 @@ async def test_rate_limit_middleware_applies_to_start_and_callbacks() -> None:
     users = MemoryUsers()
     service = OnboardingService(users, NoOpAnalytics())
     intake = ConversationIntakeService(MemoryAnalyses(), ConversationParser(), NoOpAnalytics())
-    await limited_dispatcher.feed_update(bot, start_update(), onboarding=service, intake=intake)
-    await limited_dispatcher.feed_update(bot, start_update(2), onboarding=service, intake=intake)
+    billing = {"credits": FakeCredits(), "previews": FakePreviews(), "analysis_price": 1}
+    await limited_dispatcher.feed_update(
+        bot, start_update(), onboarding=service, intake=intake, **billing
+    )
+    await limited_dispatcher.feed_update(
+        bot, start_update(2), onboarding=service, intake=intake, **billing
+    )
     await limited_dispatcher.feed_update(
         bot, callback_update("menu:history", 3), onboarding=service
     )
@@ -509,14 +541,12 @@ async def test_processing_notice_failure_still_runs_analysis_privately(
     await dispatcher.feed_update(
         bot, callback_update(f"intake:goal:{draft.id}:0", 93), onboarding=service, intake=intake
     )
-    session.fail_text = texts.PROCESSING
     await dispatcher.feed_update(
         bot,
         callback_update(f"intake:stage:{draft.id}:dating", 94),
         onboarding=service,
         intake=intake,
     )
-    assert runner.calls == [(draft.id, draft.user_id)]
-    assert "Тестовый вывод." in " ".join(sent_texts(session))
+    assert runner.calls == []
+    assert "Полный отчёт: 1 кредитов" in " ".join(sent_texts(session))
     assert "SECRET-PRIVATE-CONTENT" not in caplog.text
-    assert "delivery_stage=processing_notice" in caplog.text

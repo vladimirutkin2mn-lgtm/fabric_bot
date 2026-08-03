@@ -71,6 +71,7 @@ async def create_row(
             result_json=payload() if status == "completed" else None,
             completed_at=(completed_at or datetime.now(UTC)) if status == "completed" else None,
             failure_code="safe" if status == "failed" else None,
+            report_access="full" if status == "completed" else "none",
         )
         session.add(row)
         await session.commit()

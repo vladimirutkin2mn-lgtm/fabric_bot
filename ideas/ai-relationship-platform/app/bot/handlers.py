@@ -12,7 +12,10 @@ from aiogram.types import CallbackQuery, Message
 from app.bot import texts
 from app.bot.keyboards import (
     age_keyboard,
+    billing_keyboard,
     cancel_keyboard,
+    checkout_creating_keyboard,
+    checkout_keyboard,
     consent_keyboard,
     corrupted_report_keyboard,
     deletion_keyboard,
@@ -20,21 +23,28 @@ from app.bot.keyboards import (
     history_keyboard,
     main_menu_keyboard,
     participant_keyboard,
+    paywall_keyboard,
+    preview_actions_keyboard,
+    products_keyboard,
     stage_keyboard,
 )
 from app.bot.report_delivery import deliver_report
 from app.bot.states import IntakeStates, OnboardingStates
 from app.db.models import Analysis
+from app.domain.products import ProductCatalog
 from app.repositories.analyses import DeletionOutcome, FeedbackOutcome
-from app.services.analysis_service import AnalysisRunner, AnalysisServiceStatus
 from app.services.conversation_intake import ConversationIntakeService, InvalidTransition
 from app.services.conversation_parser import ConversationRejected
+from app.services.credits_service import CreditsService
+from app.services.monetized_analysis import MonetizedAnalysisService, MonetizedStatus
 from app.services.onboarding import (
     CURRENT_CONSENT_VERSION,
     OnboardingService,
     OnboardingStep,
     TelegramIdentity,
 )
+from app.services.payment_service import CheckoutOutcome, PaymentService
+from app.services.preview_entitlement import PreviewEntitlementService
 from app.services.report_renderer import RELATIONSHIP_STAGE_LABELS
 from app.services.report_service import ReportResult, ReportService, ReportStatus
 
@@ -73,6 +83,9 @@ async def start(
     state: FSMContext,
     onboarding: OnboardingService,
     intake: ConversationIntakeService,
+    credits: CreditsService,
+    previews: PreviewEntitlementService,
+    analysis_price: int,
 ) -> None:
     if message.from_user is None:
         return
@@ -90,6 +103,10 @@ async def start(
         analysis = None if user is None else await intake.active(user.id)
         if analysis is not None:
             await show_intake_step(message, state, analysis)
+            return
+        pending = None if user is None else await intake.pending_billing(user.id)
+        if pending is not None:
+            await show_billing(message, pending, credits, previews, analysis_price)
             return
     await show_step(message, state, step)
 
@@ -132,6 +149,9 @@ async def analyze(
     state: FSMContext,
     onboarding: OnboardingService,
     intake: ConversationIntakeService,
+    credits: CreditsService,
+    previews: PreviewEntitlementService,
+    analysis_price: int,
 ) -> None:
     await callback.answer()
     if not isinstance(callback.message, Message):
@@ -140,6 +160,10 @@ async def analyze(
         user = await onboarding.current_user(callback.from_user.id)
         if user is None:
             await callback.message.answer(texts.STALE_DRAFT)
+            return
+        pending = await intake.pending_billing(user.id)
+        if pending is not None:
+            await show_billing(callback.message, pending, credits, previews, analysis_price)
             return
         analysis = await intake.start(user)
         await show_intake_step(callback.message, state, analysis)
@@ -170,6 +194,23 @@ async def show_intake_step(message: Message, state: FSMContext, analysis: Analys
     else:
         await state.clear()
         await message.answer(texts.DRAFT_READY, reply_markup=main_menu_keyboard())
+
+
+async def show_billing(
+    message: Message,
+    analysis: Analysis,
+    credits: CreditsService,
+    previews: PreviewEntitlementService,
+    price: int,
+) -> None:
+    balance = await credits.balance(analysis.user_id)
+    preview = await previews.get_preview_state(analysis.user_id)
+    await message.answer(
+        f"Переписка готова к разбору.\n\nПолный отчёт: {price} кредитов\nВаш баланс: {balance} кредитов\n\nМожно сначала посмотреть бесплатное превью или пополнить баланс.",
+        reply_markup=billing_keyboard(
+            analysis.id, price, bool(preview and preview.status == "available")
+        ),
+    )
 
 
 async def _owned(
@@ -317,8 +358,9 @@ async def choose_stage(
     state: FSMContext,
     onboarding: OnboardingService,
     intake: ConversationIntakeService,
-    analysis_service: AnalysisRunner,
-    reports: ReportService,
+    credits: CreditsService,
+    previews: PreviewEntitlementService,
+    analysis_price: int,
 ) -> None:
     parts = _callback_parts(callback)
     analysis = await _owned(callback, onboarding, intake, parts[2] if len(parts) > 2 else "")
@@ -332,46 +374,14 @@ async def choose_stage(
     await callback.answer()
     await state.clear()
     if isinstance(callback.message, Message):
-        try:
-            await callback.message.answer(texts.PROCESSING)
-        except Exception:
-            logger.warning(
-                "telegram_delivery_failed analysis_id=%s "
-                "delivery_stage=processing_notice error_category=telegram_delivery",
-                completed.id,
-            )
-        outcome = await analysis_service.analyze(completed.id, completed.user_id)
-        if outcome.status is AnalysisServiceStatus.COMPLETED and outcome.result is not None:
-            from app.services.report_renderer import ReportRenderer
-
-            report = ReportRenderer().render(outcome.result)
-            await deliver_report(callback.message, completed.id, report)
-            await reports.event(
-                completed.user_id,
-                "analysis_report_delivered",
-                {
-                    "analysis_id": str(completed.id),
-                    "source": "immediate",
-                    "chunk_count_bucket": str(min(len(report.chunks), 4)),
-                },
-            )
-        elif outcome.status is AnalysisServiceStatus.ALREADY_PROCESSING:
-            await callback.message.answer("Этот разбор уже выполняется.")
-        elif outcome.status in {
-            AnalysisServiceStatus.NOT_READY,
-            AnalysisServiceStatus.NOT_FOUND,
-            AnalysisServiceStatus.DELETED,
-        }:
-            await callback.message.answer(
-                "Не хватает данных для запуска. Вернитесь в меню и начните новый разбор."
-            )
-        else:
-            await callback.message.answer(
-                texts.ANALYSIS_FAILURES.get(
-                    outcome.failure_code or "",
-                    "Не удалось завершить разбор из-за технической ошибки. Начните новый разбор позже.",
-                )
-            )
+        balance = await credits.balance(completed.user_id)
+        preview = await previews.get_preview_state(completed.user_id)
+        await callback.message.answer(
+            f"Переписка готова к разбору.\n\nПолный отчёт: {analysis_price} кредитов\nВаш баланс: {balance} кредитов\n\nМожно сначала посмотреть бесплатное превью или пополнить баланс.",
+            reply_markup=billing_keyboard(
+                completed.id, analysis_price, bool(preview and preview.status == "available")
+            ),
+        )
 
 
 @router.callback_query(F.data.startswith("intake:cancel:"))
@@ -429,11 +439,147 @@ async def return_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(texts.MAIN_MENU, reply_markup=main_menu_keyboard())
 
 
-@router.callback_query(F.data.in_({"menu:balance", "menu:privacy"}))
+@router.callback_query(F.data == "menu:privacy")
 async def placeholder(callback: CallbackQuery) -> None:
     await callback.answer()
     if isinstance(callback.message, Message):
         await callback.message.answer(texts.COMING_LATER)
+
+
+async def _billing_user(callback: CallbackQuery, onboarding: OnboardingService) -> object | None:
+    return await onboarding.current_user(callback.from_user.id)
+
+
+@router.callback_query(F.data.in_({"menu:balance", "credits:refresh"}))
+async def balance_screen(
+    callback: CallbackQuery,
+    onboarding: OnboardingService,
+    credits: CreditsService,
+    catalog: ProductCatalog,
+    analysis_price: int,
+) -> None:
+    await callback.answer()
+    user = await onboarding.current_user(callback.from_user.id)
+    if user is not None and isinstance(callback.message, Message):
+        balance = await credits.balance(user.id)
+        await callback.message.answer(
+            f"Ваш баланс: {balance} кредитов\nОдин полный разбор стоит: {analysis_price} кредитов\n\nТестовая оплата — реальные деньги не списываются.\nМесячный пакет — разовое начисление без автопродления.",
+            reply_markup=products_keyboard(catalog),
+        )
+
+
+@router.callback_query(F.data.startswith("credits:buy:"))
+async def buy_credits(
+    callback: CallbackQuery, onboarding: OnboardingService, payments: PaymentService
+) -> None:
+    await callback.answer()
+    user = await onboarding.current_user(callback.from_user.id)
+    if user is None or not isinstance(callback.message, Message):
+        return
+    outcome = await payments.create_checkout(user.id, _callback_parts(callback)[-1])
+    if outcome.outcome is CheckoutOutcome.CREATING:
+        await callback.message.answer(
+            "Тестовая оплата уже создаётся. Обновите экран через несколько секунд.",
+            reply_markup=checkout_creating_keyboard(_callback_parts(callback)[-1]),
+        )
+        return
+    if (
+        outcome.outcome not in {CheckoutOutcome.CREATED, CheckoutOutcome.EXISTING}
+        or outcome.checkout is None
+    ):
+        await callback.message.answer("Не удалось создать тестовую оплату.")
+        return
+    await callback.message.answer(
+        "Тестовая оплата — реальные деньги не списываются.",
+        reply_markup=checkout_keyboard(outcome.checkout.url),
+    )
+
+
+@router.callback_query(F.data.startswith("billing:"))
+async def billing_action(
+    callback: CallbackQuery,
+    onboarding: OnboardingService,
+    monetized: MonetizedAnalysisService,
+    credits: CreditsService,
+    previews: PreviewEntitlementService,
+    analysis_price: int,
+) -> None:
+    parts = _callback_parts(callback)
+    try:
+        analysis_id = UUID(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer(texts.STALE_DRAFT, show_alert=True)
+        return
+    user = await onboarding.current_user(callback.from_user.id)
+    if user is None or not isinstance(callback.message, Message):
+        await callback.answer(texts.STALE_DRAFT, show_alert=True)
+        return
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "refresh":
+        balance = await credits.balance(user.id)
+        preview = await previews.get_preview_state(user.id)
+        await callback.answer()
+        await callback.message.answer(
+            f"Полный отчёт: {analysis_price} кредитов\nВаш баланс: {balance} кредитов",
+            reply_markup=billing_keyboard(
+                analysis_id, analysis_price, bool(preview and preview.status == "available")
+            ),
+        )
+        return
+    try:
+        await callback.message.answer(texts.PROCESSING)
+    except Exception:
+        logger.warning(
+            "telegram_delivery_failed analysis_id=%s delivery_stage=processing_notice error_category=telegram_delivery",
+            analysis_id,
+        )
+    if action == "preview":
+        outcome = await monetized.run_preview(analysis_id, user.id)
+    elif action == "full":
+        outcome = await monetized.run_full(analysis_id, user.id)
+    elif action == "unlock":
+        outcome = await monetized.unlock_full(analysis_id, user.id)
+    else:
+        await callback.answer(texts.STALE_DRAFT, show_alert=True)
+        return
+    await callback.answer()
+    if outcome.status is MonetizedStatus.PREVIEW_COMPLETED and outcome.result:
+        from app.services.report_renderer import ReportRenderer
+
+        report = ReportRenderer().render_preview(outcome.result)
+        for index, chunk in enumerate(report.chunks):
+            markup = (
+                preview_actions_keyboard(analysis_id, analysis_price)
+                if index == len(report.chunks) - 1
+                else None
+            )
+            await callback.message.answer(chunk, reply_markup=markup)
+    elif outcome.status is MonetizedStatus.FULL_COMPLETED and outcome.result:
+        from app.services.report_renderer import ReportRenderer
+
+        await deliver_report(callback.message, analysis_id, ReportRenderer().render(outcome.result))
+    elif outcome.status is MonetizedStatus.INSUFFICIENT_CREDITS:
+        preview = await previews.get_preview_state(user.id)
+        await callback.message.answer(
+            f"Для полного разбора не хватает кредитов.\n\nСтоимость: {analysis_price}\nБаланс: {outcome.balance or 0}",
+            reply_markup=paywall_keyboard(
+                analysis_id,
+                bool(
+                    preview and preview.analysis_id == analysis_id and preview.status == "consumed"
+                ),
+            ),
+        )
+    elif outcome.status is MonetizedStatus.ALREADY_PROCESSING:
+        await callback.message.answer("Этот разбор уже выполняется.")
+    elif outcome.status in {
+        MonetizedStatus.TECHNICAL_FAILURE_REFUNDED,
+        MonetizedStatus.TECHNICAL_FAILURE_ALREADY_REFUNDED,
+    }:
+        await callback.message.answer(
+            "Не удалось завершить разбор из-за технической ошибки. Кредиты возвращены."
+        )
+    else:
+        await callback.message.answer(texts.REPORT_UNAVAILABLE)
 
 
 async def _report_user(callback: CallbackQuery, onboarding: OnboardingService) -> object | None:
@@ -451,7 +597,7 @@ async def _show_history(
     labels = [
         (
             item.analysis_id,
-            f"{item.completed_at:%d.%m.%Y} · {RELATIONSHIP_STAGE_LABELS.get(item.relationship_stage or '', 'Стадия не указана')}",
+            f"{dict(preview='Превью', full='Полный', none='Не разблокирован').get(item.access_level, 'Не разблокирован')} · {item.completed_at:%d.%m.%Y} · {RELATIONSHIP_STAGE_LABELS.get(item.relationship_stage or '', 'Стадия не указана')}",
         )
         for item in history_page.items
     ]
@@ -503,7 +649,10 @@ async def open_history(
             callback.message,
             loaded.analysis.id,
             loaded.report,
-            feedback_exists=loaded.analysis.feedback_score is not None,
+            feedback_exists=(
+                loaded.analysis.feedback_score is not None
+                or loaded.analysis.report_access != "full"
+            ),
         )
         await reports.event(
             loaded.analysis.user_id,
@@ -535,7 +684,13 @@ async def replies(
     loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.result and loaded.analysis:
+        if (
+            loaded
+            and loaded.status is ReportStatus.COMPLETED
+            and loaded.result
+            and loaded.analysis
+            and loaded.analysis.report_access == "full"
+        ):
             rendered = reports.render_replies(loaded.result)
             for chunk in rendered.chunks:
                 await callback.message.answer(chunk)
@@ -555,7 +710,12 @@ async def followup(
     loaded = await _load_report(callback, onboarding, reports)
     await callback.answer()
     if isinstance(callback.message, Message):
-        if loaded and loaded.status is ReportStatus.COMPLETED and loaded.analysis:
+        if (
+            loaded
+            and loaded.status is ReportStatus.COMPLETED
+            and loaded.analysis
+            and loaded.analysis.report_access == "full"
+        ):
             await callback.message.answer(texts.FOLLOWUP_UNAVAILABLE)
             await reports.event(
                 loaded.analysis.user_id,

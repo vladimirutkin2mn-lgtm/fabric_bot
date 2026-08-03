@@ -16,6 +16,7 @@ from app.db.models import Analysis
 class AnalysisRepository(Protocol):
     async def create_or_resume(self, user_id: UUID) -> tuple[Analysis, bool]: ...
     async def get_active(self, user_id: UUID) -> Analysis | None: ...
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None: ...
     async def get_owned(self, analysis_id: UUID, user_id: UUID) -> Analysis | None: ...
     async def save(self, analysis: Analysis) -> None: ...
     async def cancel(self, analysis: Analysis) -> None: ...
@@ -87,11 +88,28 @@ class SqlAlchemyAnalysisRepository:
         return cast(
             Analysis | None,
             await self._session.scalar(
-                select(Analysis).where(
+                select(Analysis)
+                .where(
                     Analysis.user_id == user_id,
                     Analysis.status == "draft",
                     Analysis.intake_step != "complete",
                 )
+                .order_by(Analysis.created_at.desc())
+            ),
+        )
+
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None:
+        return cast(
+            Analysis | None,
+            await self._session.scalar(
+                select(Analysis)
+                .where(
+                    Analysis.user_id == user_id,
+                    Analysis.status == "draft",
+                    Analysis.intake_step == "complete",
+                    Analysis.report_access == "none",
+                )
+                .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             ),
         )
 
@@ -162,6 +180,7 @@ class SqlAlchemyAnalysisRepository:
                     Analysis.id == analysis_id,
                     Analysis.user_id == user_id,
                     Analysis.status == "completed",
+                    Analysis.report_access == "full",
                     Analysis.feedback_score.is_(None),
                 )
                 .values(feedback_score=score, feedback_submitted_at=datetime.now(UTC))
@@ -191,6 +210,7 @@ class SqlAlchemyAnalysisRepository:
                 )
                 .values(
                     status="deleted",
+                    report_access="none",
                     normalized_conversation_json=None,
                     participants_json=None,
                     user_participant_label=None,
@@ -228,6 +248,7 @@ class SqlAlchemyAnalysisRepository:
 
     async def cancel(self, analysis: Analysis) -> None:
         analysis.status = "deleted"
+        analysis.report_access = "none"
         analysis.normalized_conversation_json = None
         analysis.participants_json = None
         analysis.user_participant_label = None

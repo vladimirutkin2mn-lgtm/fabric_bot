@@ -37,6 +37,7 @@ class ReportStatus(StrEnum):
     NOT_COMPLETED = "not_completed"
     DELETED = "deleted"
     CORRUPTED_RESULT = "corrupted_result"
+    NOT_UNLOCKED = "not_unlocked"
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class HistoryItem:
     analysis_id: UUID
     completed_at: datetime
     relationship_stage: str | None
+    access_level: str
 
 
 @dataclass(frozen=True)
@@ -80,13 +82,20 @@ class ReportService:
             return ReportResult(ReportStatus.DELETED, analysis)
         if analysis.status != "completed" or analysis.result_json is None:
             return ReportResult(ReportStatus.NOT_COMPLETED, analysis)
+        if analysis.report_access == "none":
+            return ReportResult(ReportStatus.NOT_UNLOCKED, analysis)
         try:
             payload = json.dumps(analysis.result_json, ensure_ascii=False)
             result = AnalysisResult.model_validate_json(payload)
         except (ValidationError, ValueError, TypeError):
             logger.warning("report_result_corrupted analysis_id=%s", analysis_id)
             return ReportResult(ReportStatus.CORRUPTED_RESULT, analysis)
-        return ReportResult(ReportStatus.COMPLETED, analysis, result, self._renderer.render(result))
+        report = (
+            self._renderer.render_preview(result)
+            if analysis.report_access == "preview"
+            else self._renderer.render(result)
+        )
+        return ReportResult(ReportStatus.COMPLETED, analysis, result, report)
 
     async def history(self, user_id: UUID, page: int) -> HistoryPage:
         safe_page = max(page, 0)
@@ -94,7 +103,7 @@ class ReportService:
             user_id, safe_page, HISTORY_PAGE_SIZE
         )
         items = tuple(
-            HistoryItem(row.id, row.completed_at, row.relationship_stage)
+            HistoryItem(row.id, row.completed_at, row.relationship_stage, row.report_access)
             for row in rows
             if row.completed_at is not None
         )

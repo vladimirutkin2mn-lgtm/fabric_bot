@@ -188,6 +188,45 @@ class ReportRenderer:
         )
         return RenderedReport(chunk_text("\n\n".join(sections)))
 
+    def render_preview(self, result: AnalysisResult) -> RenderedReport:
+        """Render the intentionally limited, deterministic one-time preview."""
+        quality = "данных достаточно" if result.quality.sufficient else "данных недостаточно"
+        ranked = sorted(
+            enumerate(result.observations),
+            key=lambda item: (
+                {Importance.HIGH: 0, Importance.MEDIUM: 1, Importance.LOW: 2}[item[1].importance],
+                item[0],
+            ),
+        )[:2]
+        signals = (
+            "\n\n".join(
+                f"{number}. {observation.claim}\nОснование: {_refs(observation.evidence_refs)}."
+                for number, (_, observation) in enumerate(ranked, 1)
+            )
+            or "Надёжных отдельных сигналов пока нет."
+        )
+        uncertainty = (
+            result.unknowns[0]
+            if result.unknowns
+            else "Вывод ограничен доступным фрагментом переписки."
+        )
+        broad = {
+            DynamicDirection.WARMING: "скорее позитивная",
+            DynamicDirection.STABLE_POSITIVE: "скорее позитивная",
+            DynamicDirection.MIXED: "неоднозначная",
+            DynamicDirection.UNSTABLE: "неоднозначная",
+            DynamicDirection.COOLING: "скорее негативная",
+            DynamicDirection.INSUFFICIENT_DATA: "данных недостаточно",
+        }[result.dynamic.direction]
+        text = (
+            f"Качество переписки\n\n{quality}.\n\n"
+            f"Два сильнейших наблюдаемых сигнала\n\n{signals}\n\n"
+            f"Что остаётся неизвестным\n\n• {uncertainty}\n\n"
+            f"Общее направление\n\n{broad}.\n\n"
+            "Это бесплатное превью. Полный отчёт содержит подробные гипотезы, действия и варианты ответа."
+        )
+        return RenderedReport(chunk_text(text))
+
     def render_replies(self, result: AnalysisResult) -> RenderedReport:
         """Render only already-persisted suggestions without invoking a provider."""
         replies = [
