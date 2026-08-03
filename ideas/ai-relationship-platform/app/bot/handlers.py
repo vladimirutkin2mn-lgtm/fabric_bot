@@ -580,7 +580,7 @@ async def _show_history(
     labels = [
         (
             item.analysis_id,
-            f"{'Превью' if item.access_level == 'preview' else 'Полный'} · {item.completed_at:%d.%m.%Y} · {RELATIONSHIP_STAGE_LABELS.get(item.relationship_stage or '', 'Стадия не указана')}",
+            f"{dict(preview='Превью', full='Полный', none='Не разблокирован').get(item.access_level, 'Не разблокирован')} · {item.completed_at:%d.%m.%Y} · {RELATIONSHIP_STAGE_LABELS.get(item.relationship_stage or '', 'Стадия не указана')}",
         )
         for item in history_page.items
     ]

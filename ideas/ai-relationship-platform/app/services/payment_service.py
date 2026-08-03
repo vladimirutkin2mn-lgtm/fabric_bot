@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -86,13 +87,11 @@ class PaymentService:
                 session.add(order)
                 await session.flush()
                 created = True
-            elif order.status == "pending" and order.provider_checkout_id:
-                request = CheckoutRequest(
+            elif order.status == "pending" and order.provider_checkout_id and order.checkout_url:
+                return CheckoutResult(
+                    CheckoutOutcome.EXISTING,
                     order.id,
-                    order.checkout_token,
-                    order.product_code,
-                    order.amount_minor,
-                    order.currency,
+                    Checkout(order.provider, order.provider_checkout_id, order.checkout_url),
                 )
             else:
                 request = CheckoutRequest(
@@ -119,7 +118,11 @@ class PaymentService:
             current = await session.get(PaymentOrder, request.order_id, with_for_update=True)
             if current is None:
                 return CheckoutResult(CheckoutOutcome.PROVIDER_FAILED, request.order_id)
-            current.provider_checkout_id, current.status = checkout.provider_checkout_id, "pending"
+            current.provider_checkout_id, current.checkout_url, current.status = (
+                checkout.provider_checkout_id,
+                checkout.url,
+                "pending",
+            )
         if created:
             await self._track(
                 user_id,
@@ -188,8 +191,11 @@ class PaymentService:
 
     async def order_by_token(self, token: UUID) -> PaymentOrder | None:
         async with self._sessions() as session:
-            return await session.scalar(
-                select(PaymentOrder).where(PaymentOrder.checkout_token == token)
+            return cast(
+                PaymentOrder | None,
+                await session.scalar(
+                    select(PaymentOrder).where(PaymentOrder.checkout_token == token)
+                ),
             )
 
     async def _track(self, user_id: UUID, event: str, properties: dict[str, str]) -> None:

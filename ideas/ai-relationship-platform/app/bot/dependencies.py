@@ -87,6 +87,7 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
                 previews,
                 analysis_service,
                 self._settings.analysis_price_credits,
+                self._analytics,
             )
             data["analysis_price"] = self._settings.analysis_price_credits
             data["reports"] = ReportService(analyses, ReportRenderer(), self._analytics)

@@ -23,6 +23,7 @@ class RefundOutcome(StrEnum):
     ALREADY_REFUNDED = "already_refunded"
     SPEND_NOT_FOUND = "spend_not_found"
     INVALID_SPEND = "invalid_spend"
+    AUTHORIZATION_MISMATCH = "authorization_mismatch"
 
 
 class GrantOutcome(StrEnum):
@@ -66,6 +67,11 @@ class CreditsService:
                 is None
             ):
                 return SpendResult(SpendOutcome.ANALYSIS_NOT_FOUND)
+            analysis = await session.scalar(
+                select(Analysis).where(Analysis.id == analysis_id, Analysis.user_id == user_id)
+            )
+            if analysis is None:
+                return SpendResult(SpendOutcome.ANALYSIS_NOT_FOUND)
             existing = await session.scalar(
                 select(CreditTransaction).where(CreditTransaction.idempotency_key == key)
             )
@@ -78,16 +84,14 @@ class CreditsService:
                 or 0
             )
             if existing is not None:
+                if not (
+                    existing.user_id == user_id
+                    and existing.analysis_id == analysis_id
+                    and existing.type == "spend"
+                    and existing.amount == -amount
+                ):
+                    return SpendResult(SpendOutcome.ANALYSIS_NOT_FOUND, balance=balance)
                 return SpendResult(SpendOutcome.ALREADY_SPENT, existing.id, balance)
-            if (
-                await session.scalar(
-                    select(Analysis.id).where(
-                        Analysis.id == analysis_id, Analysis.user_id == user_id
-                    )
-                )
-                is None
-            ):
-                return SpendResult(SpendOutcome.ANALYSIS_NOT_FOUND, balance=balance)
             if balance < amount:
                 return SpendResult(SpendOutcome.INSUFFICIENT_BALANCE, balance=balance)
             row = CreditTransaction(
@@ -101,13 +105,15 @@ class CreditsService:
             await session.flush()
             return SpendResult(SpendOutcome.SPENT, row.id, balance - amount)
 
-    async def refund(self, spend_id: UUID) -> RefundOutcome:
+    async def refund(self, user_id: UUID, analysis_id: UUID, spend_id: UUID) -> RefundOutcome:
         async with self._sessions.begin() as session:
             spend = await session.scalar(
                 select(CreditTransaction).where(CreditTransaction.id == spend_id).with_for_update()
             )
             if spend is None:
                 return RefundOutcome.SPEND_NOT_FOUND
+            if spend.user_id != user_id or spend.analysis_id != analysis_id:
+                return RefundOutcome.AUTHORIZATION_MISMATCH
             if spend.type != "spend" or spend.amount >= 0:
                 return RefundOutcome.INVALID_SPEND
             key = f"refund:{spend.id}"

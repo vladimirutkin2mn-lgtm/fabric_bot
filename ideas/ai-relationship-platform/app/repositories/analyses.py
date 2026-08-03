@@ -163,6 +163,7 @@ class SqlAlchemyAnalysisRepository:
                     Analysis.id == analysis_id,
                     Analysis.user_id == user_id,
                     Analysis.status == "completed",
+                    Analysis.report_access == "full",
                     Analysis.feedback_score.is_(None),
                 )
                 .values(feedback_score=score, feedback_submitted_at=datetime.now(UTC))
