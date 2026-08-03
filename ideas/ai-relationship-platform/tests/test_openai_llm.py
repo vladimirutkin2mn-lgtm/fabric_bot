@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import openai
 import pytest
+from openai import AsyncOpenAI
 
 from app.domain.analysis import AnalysisResult
 from app.providers.llm.base import (
@@ -62,7 +63,13 @@ def request() -> LLMRequest:
 
 
 def adapter(client: FakeClient, attempts: int = 2) -> OpenAILLMClient:
-    return OpenAILLMClient("not-a-real-key", "configured-model", 12.5, attempts, client)
+    return OpenAILLMClient(
+        "not-a-real-key",
+        "configured-model",
+        12.5,
+        attempts,
+        cast(AsyncOpenAI, client),
+    )
 
 
 async def test_request_contract_and_metadata_extraction() -> None:
@@ -71,8 +78,8 @@ async def test_request_contract_and_metadata_extraction() -> None:
     call = client.responses.calls[0]
     assert call["model"] == "configured-model"
     assert call["input"] == [
-        {"role": "system", "content": "system " + SECRET},
-        {"role": "user", "content": "user " + SECRET},
+        {"type": "message", "role": "system", "content": "system " + SECRET},
+        {"type": "message", "role": "user", "content": "user " + SECRET},
     ]
     format_ = cast_dict(cast_dict(call["text"])["format"])
     assert format_["type"] == "json_schema" and format_["strict"] is True

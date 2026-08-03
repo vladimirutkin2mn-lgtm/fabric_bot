@@ -1,10 +1,16 @@
 """Official OpenAI Responses API adapter."""
 
 import time
-from typing import Any
+from typing import cast
 
 import openai
 from openai import AsyncOpenAI
+from openai.types.responses import (
+    EasyInputMessageParam,
+    ResponseInputParam,
+    ResponseTextConfigParam,
+)
+from openai.types.shared_params import ResponseFormatTextJSONSchemaConfigParam
 
 from app.providers.llm.base import (
     LLMAuthenticationError,
@@ -63,11 +69,11 @@ class OpenAILLMClient:
         model: str,
         timeout_seconds: float,
         max_attempts: int,
-        client: Any | None = None,
+        client: AsyncOpenAI | None = None,
     ) -> None:
         if not api_key.strip():
             raise ValueError("OpenAI API key is required")
-        self._client = client or AsyncOpenAI(
+        self._client: AsyncOpenAI = client or AsyncOpenAI(
             api_key=api_key, timeout=timeout_seconds, max_retries=0
         )
         self._model, self._timeout, self._max_attempts = model, timeout_seconds, max_attempts
@@ -76,20 +82,29 @@ class OpenAILLMClient:
         started = time.monotonic()
         for attempt in range(1, self._max_attempts + 1):
             try:
+                system_message: EasyInputMessageParam = {
+                    "type": "message",
+                    "role": "system",
+                    "content": request.system_prompt,
+                }
+                user_message: EasyInputMessageParam = {
+                    "type": "message",
+                    "role": "user",
+                    "content": request.user_prompt,
+                }
+                input_messages: ResponseInputParam = [system_message, user_message]
+                converted_schema = cast(dict[str, object], openai_strict_schema(request.schema))
+                response_format: ResponseFormatTextJSONSchemaConfigParam = {
+                    "type": "json_schema",
+                    "name": "analysis_result",
+                    "strict": True,
+                    "schema": converted_schema,
+                }
+                text_config: ResponseTextConfigParam = {"format": response_format}
                 response = await self._client.responses.create(
                     model=self._model,
-                    input=[
-                        {"role": "system", "content": request.system_prompt},
-                        {"role": "user", "content": request.user_prompt},
-                    ],
-                    text={
-                        "format": {
-                            "type": "json_schema",
-                            "name": "analysis_result",
-                            "strict": True,
-                            "schema": openai_strict_schema(request.schema),
-                        }
-                    },
+                    input=input_messages,
+                    text=text_config,
                     store=False,
                     timeout=self._timeout,
                 )

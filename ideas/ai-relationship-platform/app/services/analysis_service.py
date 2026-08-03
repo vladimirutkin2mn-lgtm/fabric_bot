@@ -93,7 +93,7 @@ class AnalysisService:
         attempts = 0
         completions: list[LLMCompletion] = []
         try:
-            await self._analytics.track(
+            await self._track_best_effort(
                 str(user_id),
                 "analysis_processing_started",
                 {
@@ -165,7 +165,7 @@ class AnalysisService:
             await self._analyses.complete_processing(
                 analysis_id, result.model_dump(mode="json"), metadata
             )
-            await self._analytics.track(
+            await self._track_best_effort(
                 str(user_id),
                 "analysis_completed",
                 self._properties(analysis_id, metadata, attempts > 1),
@@ -290,7 +290,7 @@ class AnalysisService:
     ) -> AnalysisServiceResult:
         metadata = self._metadata(completions, attempts)
         await self._analyses.fail_processing(analysis_id, code, metadata)
-        await self._analytics.track(
+        await self._track_best_effort(
             str(user_id),
             "analysis_failed",
             self._properties(analysis_id, metadata, attempts > 1, code),
@@ -306,6 +306,23 @@ class AnalysisService:
             code,
         )
         return AnalysisServiceResult(AnalysisServiceStatus.FAILED, failure_code=code)
+
+    async def _track_best_effort(
+        self, user_id: str, event: str, properties: dict[str, str]
+    ) -> None:
+        """Keep product analytics outside the correctness path.
+
+        ``CancelledError`` is intentionally not caught because it derives from
+        ``BaseException`` rather than ``Exception`` on supported Python versions.
+        """
+        try:
+            await self._analytics.track(user_id, event, properties)
+        except Exception:
+            logger.warning(
+                "analytics_failed analysis_id=%s event=%s analytics_error=provider_error",
+                properties["analysis_id"],
+                event,
+            )
 
 
 def create_analysis_service(

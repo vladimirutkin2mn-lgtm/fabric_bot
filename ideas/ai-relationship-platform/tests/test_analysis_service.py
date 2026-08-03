@@ -63,6 +63,8 @@ class MemoryRepository:
             llm_attempt_count=0,
         )
         self.metadata: LLMMetadata | None = None
+        self.complete_writes = 0
+        self.failure_writes = 0
 
     async def get_owned(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
         return (
@@ -91,6 +93,7 @@ class MemoryRepository:
     async def complete_processing(
         self, analysis_id: UUID, result: dict[str, object], metadata: LLMMetadata
     ) -> Analysis:
+        self.complete_writes += 1
         self.analysis.status, self.analysis.result_json, self.metadata = (
             "completed",
             result,
@@ -103,6 +106,7 @@ class MemoryRepository:
     async def fail_processing(
         self, analysis_id: UUID, failure_code: str, metadata: LLMMetadata
     ) -> Analysis:
+        self.failure_writes += 1
         self.analysis.status, self.analysis.result_json = "failed", None
         self.analysis.failure_code, self.analysis.completed_at, self.metadata = (
             failure_code,
@@ -136,6 +140,22 @@ class AnalyticsRecorder:
         self, user_id: str | None, event: str, properties: Mapping[str, str] | None = None
     ) -> None:
         self.events.append((user_id, event, properties))
+
+
+class FailingAnalytics(AnalyticsRecorder):
+    def __init__(self, failing_event: str, cancellation: bool = False) -> None:
+        super().__init__()
+        self.failing_event = failing_event
+        self.cancellation = cancellation
+
+    async def track(
+        self, user_id: str | None, event: str, properties: Mapping[str, str] | None = None
+    ) -> None:
+        if event == self.failing_event:
+            if self.cancellation:
+                raise asyncio.CancelledError
+            raise RuntimeError(SECRET)
+        await super().track(user_id, event, properties)
 
 
 class ControlledLLM:
@@ -355,3 +375,62 @@ async def test_cancellation_is_never_suppressed() -> None:
     instance = AnalysisService(repository, CancelledLLM(), AnalyticsRecorder(), "stub", "stub")
     with pytest.raises(asyncio.CancelledError):
         await instance.analyze(repository.analysis.id, repository.analysis.user_id)
+
+
+async def test_processing_analytics_failure_does_not_prevent_provider_call() -> None:
+    repository, llm = MemoryRepository(), ControlledLLM(valid_payload())
+    instance, _ = service(repository, llm, FailingAnalytics("analysis_processing_started"))
+    result = await instance.analyze(repository.analysis.id, repository.analysis.user_id)
+    assert result.status == AnalysisServiceStatus.COMPLETED
+    assert len(llm.requests) == 1 and repository.complete_writes == 1
+    assert repository.failure_writes == 0
+
+
+async def test_completion_analytics_failure_cannot_change_or_mask_result() -> None:
+    repository, llm = MemoryRepository(), ControlledLLM(valid_payload())
+    instance, _ = service(repository, llm, FailingAnalytics("analysis_completed"))
+    result = await instance.analyze(repository.analysis.id, repository.analysis.user_id)
+    assert result.status == AnalysisServiceStatus.COMPLETED
+    assert repository.analysis.status == "completed" and repository.analysis.result_json
+    assert repository.complete_writes == 1 and repository.failure_writes == 0
+
+
+async def test_failure_analytics_failure_cannot_change_or_mask_typed_failure() -> None:
+    repository, llm = MemoryRepository(), ControlledLLM(LLMTimeoutError())
+    instance, _ = service(repository, llm, FailingAnalytics("analysis_failed"))
+    result = await instance.analyze(repository.analysis.id, repository.analysis.user_id)
+    assert result.status == AnalysisServiceStatus.FAILED
+    assert repository.analysis.status == "failed" and repository.analysis.result_json is None
+    assert repository.failure_writes == 1 and repository.complete_writes == 0
+
+
+@pytest.mark.parametrize(
+    "event", ["analysis_processing_started", "analysis_completed", "analysis_failed"]
+)
+async def test_analytics_exception_private_text_is_never_logged_or_stored(
+    event: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING)
+    repository = MemoryRepository()
+    llm = (
+        ControlledLLM(LLMTimeoutError())
+        if event == "analysis_failed"
+        else ControlledLLM(valid_payload())
+    )
+    instance, _ = service(repository, llm, FailingAnalytics(event))
+    await instance.analyze(repository.analysis.id, repository.analysis.user_id)
+    assert SECRET not in caplog.text
+    assert SECRET not in repr(repository.analysis.failure_code)
+    assert repository.complete_writes + repository.failure_writes == 1
+
+
+async def test_analytics_cancellation_is_propagated() -> None:
+    repository, llm = MemoryRepository(), ControlledLLM(valid_payload())
+    instance, _ = service(
+        repository,
+        llm,
+        FailingAnalytics("analysis_processing_started", cancellation=True),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await instance.analyze(repository.analysis.id, repository.analysis.user_id)
+    assert not llm.requests
