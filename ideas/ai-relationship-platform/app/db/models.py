@@ -27,6 +27,16 @@ class User(Base):
     """Telegram user and durable onboarding progress."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "(free_preview_status = 'available' AND free_preview_analysis_id IS NULL "
+            "AND free_preview_used_at IS NULL) OR "
+            "(free_preview_status = 'reserved' AND free_preview_analysis_id IS NOT NULL "
+            "AND free_preview_used_at IS NULL) OR "
+            "(free_preview_status = 'consumed' AND free_preview_used_at IS NOT NULL)",
+            name="ck_users_free_preview",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
@@ -44,7 +54,16 @@ class User(Base):
     onboarding_completed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
-    analyses: Mapped[list["Analysis"]] = relationship(back_populates="user")
+    analyses: Mapped[list["Analysis"]] = relationship(
+        back_populates="user", foreign_keys="Analysis.user_id"
+    )
+    free_preview_status: Mapped[str] = mapped_column(
+        String(16), default="available", server_default="available"
+    )
+    free_preview_analysis_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("analyses.id", ondelete="SET NULL", use_alter=True), nullable=True
+    )
+    free_preview_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Analysis(Base):
@@ -56,6 +75,10 @@ class Analysis(Base):
             "status IN ('draft','queued','processing','completed','failed','deleted')",
             name="ck_analyses_status",
         ),
+        CheckConstraint(
+            "report_access IN ('none','preview','full')", name="ck_analyses_report_access"
+        ),
+        CheckConstraint("cost_units >= 0", name="ck_analyses_cost_units"),
         CheckConstraint(
             "intake_step IN ('waiting_for_conversation','waiting_for_participant',"
             "'waiting_for_goal','waiting_for_relationship_stage','complete')",
@@ -123,8 +146,103 @@ class Analysis(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64))
     feedback_score: Mapped[int | None] = mapped_column(Integer)
     feedback_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    report_access: Mapped[str] = mapped_column(String(16), default="none", server_default="none")
+    cost_units: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    full_access_transaction_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("credit_transactions.id", ondelete="RESTRICT", use_alter=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-    user: Mapped[User] = relationship(back_populates="analyses")
+    user: Mapped[User] = relationship(back_populates="analyses", foreign_keys=[user_id])
+
+
+class PaymentOrder(Base):
+    """Provider-neutral durable checkout; it never contains card data."""
+
+    __tablename__ = "payment_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('creating','pending','completed','failed','cancelled')",
+            name="ck_payment_orders_status",
+        ),
+        CheckConstraint("credits > 0 AND amount_minor > 0", name="ck_payment_orders_positive"),
+        CheckConstraint("char_length(currency) = 3", name="ck_payment_orders_currency"),
+        CheckConstraint(
+            "(status = 'completed') = "
+            "(completed_at IS NOT NULL AND provider_payment_id IS NOT NULL)",
+            name="ck_payment_orders_completion",
+        ),
+        Index(
+            "uq_payment_orders_active",
+            "user_id",
+            "provider",
+            "product_code",
+            unique=True,
+            postgresql_where=text("status IN ('creating','pending')"),
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    product_code: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="creating")
+    credits: Mapped[int] = mapped_column(Integer)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3))
+    checkout_token: Mapped[UUID] = mapped_column(unique=True, default=uuid4)
+    provider_checkout_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    provider_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    provider_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CreditTransaction(Base):
+    """Append-only integer credit ledger."""
+
+    __tablename__ = "credit_transactions"
+    __table_args__ = (
+        CheckConstraint("amount <> 0", name="ck_credit_transactions_nonzero"),
+        CheckConstraint(
+            "type IN ('grant','purchase','spend','refund','adjustment')",
+            name="ck_credit_transactions_type",
+        ),
+        CheckConstraint(
+            "(type IN ('grant','purchase','refund') AND amount > 0) OR "
+            "(type = 'spend' AND amount < 0) OR "
+            "(type = 'adjustment' AND amount <> 0)",
+            name="ck_credit_transactions_sign",
+        ),
+        CheckConstraint(
+            "type <> 'spend' OR analysis_id IS NOT NULL",
+            name="ck_credit_transactions_spend_analysis",
+        ),
+        CheckConstraint(
+            "type <> 'purchase' OR (payment_order_id IS NOT NULL AND product_code IS NOT NULL)",
+            name="ck_credit_transactions_purchase_order",
+        ),
+        CheckConstraint(
+            "type <> 'refund' OR reverses_transaction_id IS NOT NULL",
+            name="ck_credit_transactions_refund_reversal",
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    type: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+    analysis_id: Mapped[UUID | None] = mapped_column(ForeignKey("analyses.id", ondelete="RESTRICT"))
+    payment_order_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("payment_orders.id", ondelete="RESTRICT"), unique=True
+    )
+    reverses_transaction_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("credit_transactions.id", ondelete="RESTRICT"), unique=True
+    )
+    product_code: Mapped[str | None] = mapped_column(String(64))
+    external_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
