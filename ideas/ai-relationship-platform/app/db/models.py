@@ -1,4 +1,5 @@
 """Database models owned by the onboarding milestone."""
+# ruff: noqa: E501
 
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -12,8 +13,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -229,6 +232,26 @@ class PaymentOrder(Base):
     provider_checkout_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     provider_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     provider_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    mode: Mapped[str] = mapped_column(String(32), default="one_time", server_default="one_time")
+    market: Mapped[str] = mapped_column(String(32), default="RU", server_default="RU")
+    product_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    billing_period: Mapped[str | None] = mapped_column(String(32))
+    provider_invoice_id: Mapped[str | None] = mapped_column(String(255))
+    subscription_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "subscriptions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_payment_orders_subscription",
+        )
+    )
+    provider_status: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    commercial_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -243,11 +266,11 @@ class CreditTransaction(Base):
     __table_args__ = (
         CheckConstraint("amount <> 0", name="ck_credit_transactions_nonzero"),
         CheckConstraint(
-            "type IN ('grant','purchase','spend','refund','adjustment')",
+            "type IN ('grant','purchase','spend','refund','adjustment','purchase_refund')",
             name="ck_credit_transactions_type",
         ),
         CheckConstraint(
-            "(type IN ('grant','purchase','refund') AND amount > 0) OR "
+            "(type IN ('grant','purchase','refund') AND amount > 0) OR (type = 'purchase_refund' AND amount < 0) OR "
             "(type = 'spend' AND amount < 0) OR "
             "(type = 'adjustment' AND amount <> 0)",
             name="ck_credit_transactions_sign",
@@ -264,6 +287,11 @@ class CreditTransaction(Base):
             "type <> 'refund' OR reverses_transaction_id IS NOT NULL",
             name="ck_credit_transactions_refund_reversal",
         ),
+        CheckConstraint(
+            "type <> 'purchase_refund' OR (original_purchase_transaction_id IS NOT NULL "
+            "AND payment_order_id IS NOT NULL AND refund_request_id IS NOT NULL)",
+            name="ck_credit_transactions_purchase_refund_refs",
+        ),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
@@ -279,4 +307,193 @@ class CreditTransaction(Base):
     )
     product_code: Mapped[str | None] = mapped_column(String(64))
     external_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    original_purchase_transaction_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("credit_transactions.id", ondelete="RESTRICT")
+    )
+    refund_request_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "refund_requests.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_credit_transactions_refund_request",
+        ),
+        unique=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BillingCustomer(Base):
+    __tablename__ = "billing_customers"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider"),
+        UniqueConstraint("provider", "provider_customer_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_customer_id: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('incomplete','active','past_due','cancel_at_period_end','canceled','unpaid','paused')",
+            name="ck_subscriptions_status",
+        ),
+        Index(
+            "uq_subscriptions_active_user_product",
+            "user_id",
+            "product_code",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('incomplete','active','past_due','cancel_at_period_end','paused')"
+            ),
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    billing_customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("billing_customers.id", ondelete="RESTRICT")
+    )
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_subscription_id: Mapped[str] = mapped_column(String(255), unique=True)
+    product_code: Mapped[str] = mapped_column(String(64))
+    product_version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="incomplete")
+    encrypted_payment_method: Mapped[bytes | None] = mapped_column(LargeBinary)
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consent_version: Mapped[str] = mapped_column(String(64))
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    renewal_claimed_by: Mapped[str | None] = mapped_column(String(255))
+    renewal_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_order_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "payment_orders.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_subscriptions_last_order",
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProviderWebhookEvent(Base):
+    __tablename__ = "provider_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_event_id"),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','failed','manual_review')",
+            name="ck_webhook_status",
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_event_id: Mapped[str] = mapped_column(String(255))
+    event_type: Mapped[str] = mapped_column(String(128))
+    provider_object_id: Mapped[str] = mapped_column(String(255))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RefundRequest(Base):
+    __tablename__ = "refund_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('requested','credits_reserved','provider_pending','succeeded','failed','manual_review')",
+            name="ck_refunds_status",
+        ),
+        CheckConstraint("amount_minor > 0 AND credit_units > 0", name="ck_refunds_positive"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    payment_order_id: Mapped[UUID] = mapped_column(
+        ForeignKey("payment_orders.id", ondelete="RESTRICT")
+    )
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_refund_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    status: Mapped[str] = mapped_column(String(32), default="requested")
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3))
+    credit_units: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(255))
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CreditReservation(Base):
+    __tablename__ = "credit_reservations"
+    __table_args__ = (
+        CheckConstraint("credit_units > 0", name="ck_reservations_positive"),
+        CheckConstraint(
+            "status IN ('active','consumed','released')", name="ck_reservations_status"
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    refund_request_id: Mapped[UUID] = mapped_column(
+        ForeignKey("refund_requests.id", ondelete="RESTRICT"), unique=True
+    )
+    credit_units: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BillingJob(Base):
+    __tablename__ = "billing_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "job_type IN ('webhook_processing','subscription_renewal','payment_reconciliation','refund_reconciliation')",
+            name="ck_billing_jobs_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','claimed','completed','failed','manual_review')",
+            name="ck_billing_jobs_status",
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    job_type: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(32))
+    object_type: Mapped[str] = mapped_column(String(64))
+    object_id: Mapped[str] = mapped_column(String(255))
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    claimed_by: Mapped[str | None] = mapped_column(String(255))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
