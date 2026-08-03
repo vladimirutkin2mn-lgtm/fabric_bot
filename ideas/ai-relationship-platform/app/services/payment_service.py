@@ -24,6 +24,7 @@ class CheckoutOutcome(StrEnum):
     PROVIDER_FAILED = "provider_failed"
     UNKNOWN_PRODUCT = "unknown_product"
     USER_NOT_FOUND = "user_not_found"
+    CREATING = "creating"
 
 
 class PaymentCompletionOutcome(StrEnum):
@@ -87,28 +88,21 @@ class PaymentService:
                 session.add(order)
                 await session.flush()
                 created = True
+                request = CheckoutRequest(
+                    order.id,
+                    order.checkout_token,
+                    order.product_code,
+                    order.amount_minor,
+                    order.currency,
+                )
             elif order.status == "pending" and order.provider_checkout_id and order.checkout_url:
                 return CheckoutResult(
                     CheckoutOutcome.EXISTING,
                     order.id,
                     Checkout(order.provider, order.provider_checkout_id, order.checkout_url),
                 )
-            else:
-                request = CheckoutRequest(
-                    order.id,
-                    order.checkout_token,
-                    order.product_code,
-                    order.amount_minor,
-                    order.currency,
-                )
-            if created:
-                request = CheckoutRequest(
-                    order.id,
-                    order.checkout_token,
-                    order.product_code,
-                    order.amount_minor,
-                    order.currency,
-                )
+            elif order.status == "creating":
+                return CheckoutResult(CheckoutOutcome.CREATING, order.id)
         try:
             checkout = await self._provider.create_checkout(request)
         except Exception:

@@ -100,10 +100,11 @@ async def start(
         user = await onboarding.current_user(telegram_user.id)
         analysis = None if user is None else await intake.active(user.id)
         if analysis is not None:
-            if analysis.intake_step == "complete":
-                await show_billing(message, analysis, credits, previews, analysis_price)
-                return
             await show_intake_step(message, state, analysis)
+            return
+        pending = None if user is None else await intake.pending_billing(user.id)
+        if pending is not None:
+            await show_billing(message, pending, credits, previews, analysis_price)
             return
     await show_step(message, state, step)
 
@@ -158,10 +159,11 @@ async def analyze(
         if user is None:
             await callback.message.answer(texts.STALE_DRAFT)
             return
-        analysis = await intake.start(user)
-        if analysis.intake_step == "complete":
-            await show_billing(callback.message, analysis, credits, previews, analysis_price)
+        pending = await intake.pending_billing(user.id)
+        if pending is not None:
+            await show_billing(callback.message, pending, credits, previews, analysis_price)
             return
+        analysis = await intake.start(user)
         await show_intake_step(callback.message, state, analysis)
         return
     step = await onboarding.current_step(callback.from_user.id)

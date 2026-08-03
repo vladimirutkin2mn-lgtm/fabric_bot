@@ -16,6 +16,7 @@ from app.db.models import Analysis
 class AnalysisRepository(Protocol):
     async def create_or_resume(self, user_id: UUID) -> tuple[Analysis, bool]: ...
     async def get_active(self, user_id: UUID) -> Analysis | None: ...
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None: ...
     async def get_owned(self, analysis_id: UUID, user_id: UUID) -> Analysis | None: ...
     async def save(self, analysis: Analysis) -> None: ...
     async def cancel(self, analysis: Analysis) -> None: ...
@@ -91,8 +92,24 @@ class SqlAlchemyAnalysisRepository:
                 .where(
                     Analysis.user_id == user_id,
                     Analysis.status == "draft",
+                    Analysis.intake_step != "complete",
                 )
                 .order_by(Analysis.created_at.desc())
+            ),
+        )
+
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None:
+        return cast(
+            Analysis | None,
+            await self._session.scalar(
+                select(Analysis)
+                .where(
+                    Analysis.user_id == user_id,
+                    Analysis.status == "draft",
+                    Analysis.intake_step == "complete",
+                    Analysis.report_access == "none",
+                )
+                .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             ),
         )
 

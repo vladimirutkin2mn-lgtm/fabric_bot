@@ -174,7 +174,22 @@ class MemoryAnalyses:
             (
                 item
                 for item in self.analyses.values()
-                if item.user_id == user_id and item.status == "draft"
+                if item.user_id == user_id
+                and item.status == "draft"
+                and item.intake_step != "complete"
+            ),
+            None,
+        )
+
+    async def get_latest_pending_billing(self, user_id: UUID) -> Analysis | None:
+        return next(
+            (
+                item
+                for item in reversed(tuple(self.analyses.values()))
+                if item.user_id == user_id
+                and item.status == "draft"
+                and item.intake_step == "complete"
+                and item.report_access in {None, "none"}
             ),
             None,
         )
@@ -479,8 +494,13 @@ async def test_rate_limit_middleware_applies_to_start_and_callbacks() -> None:
     users = MemoryUsers()
     service = OnboardingService(users, NoOpAnalytics())
     intake = ConversationIntakeService(MemoryAnalyses(), ConversationParser(), NoOpAnalytics())
-    await limited_dispatcher.feed_update(bot, start_update(), onboarding=service, intake=intake)
-    await limited_dispatcher.feed_update(bot, start_update(2), onboarding=service, intake=intake)
+    billing = {"credits": FakeCredits(), "previews": FakePreviews(), "analysis_price": 1}
+    await limited_dispatcher.feed_update(
+        bot, start_update(), onboarding=service, intake=intake, **billing
+    )
+    await limited_dispatcher.feed_update(
+        bot, start_update(2), onboarding=service, intake=intake, **billing
+    )
     await limited_dispatcher.feed_update(
         bot, callback_update("menu:history", 3), onboarding=service
     )
