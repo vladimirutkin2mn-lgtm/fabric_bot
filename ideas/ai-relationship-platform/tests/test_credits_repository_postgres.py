@@ -259,3 +259,50 @@ async def test_full_access_and_refund_are_mutually_exclusive_under_race(
             )
             assert analysis is not None
             assert not (analysis.report_access == "full" and refund_count == 1)
+
+
+async def test_public_unlock_and_refund_are_mutually_exclusive(
+    billing_db: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, analyses = await _user_and_analyses(billing_db, 1)
+    credits = CreditsService(billing_db)
+    previews = PreviewEntitlementService(billing_db)
+    await credits.grant(user_id, 1, "public-race:grant")
+    spent = await credits.spend(user_id, analyses[0], 1)
+    assert spent.transaction_id is not None
+    async with billing_db.begin() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        assert analysis is not None
+        analysis.status = "completed"
+        analysis.report_access = "preview"
+        analysis.result_json = payload()
+        analysis.completed_at = datetime.now(UTC)
+
+    class NeverRun:
+        calls = 0
+
+        async def analyze(self, analysis_id: UUID, owner_id: UUID) -> AnalysisServiceResult:
+            self.calls += 1
+            raise AssertionError("unlock must not invoke analysis")
+
+    runner = NeverRun()
+    service = MonetizedAnalysisService(
+        billing_db, credits, previews, runner, 1, NoOpAnalyticsClient()
+    )
+    await asyncio.gather(
+        service.unlock_full(analyses[0], user_id),
+        credits.refund_if_not_full(user_id, analyses[0], spent.transaction_id, 1),
+    )
+    async with billing_db() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        refund_count = await session.scalar(
+            select(func.count())
+            .select_from(CreditTransaction)
+            .where(CreditTransaction.reverses_transaction_id == spent.transaction_id)
+        )
+        assert analysis is not None
+        balance = await credits.balance(user_id)
+        assert (analysis.report_access == "full" and refund_count == 0 and balance == 0) or (
+            analysis.report_access == "preview" and refund_count == 1 and balance == 1
+        )
+        assert runner.calls == 0

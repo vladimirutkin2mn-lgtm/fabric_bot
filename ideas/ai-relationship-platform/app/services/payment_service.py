@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import cast
+from sqlalchemy.exc import IntegrityError
 from uuid import UUID
 
 from sqlalchemy import select
@@ -130,9 +131,17 @@ class PaymentService:
             )
             return CheckoutResult(CheckoutOutcome.PROVIDER_FAILED, request.order_id)
         async with self._sessions.begin() as session:
-            current = await session.get(PaymentOrder, request.order_id, with_for_update=True)
-            if current is None:
-                return CheckoutResult(CheckoutOutcome.PROVIDER_FAILED, request.order_id)
+                        checkout_started_emitted=True,
+                    .returning(PaymentOrder.id, PaymentOrder.checkout_started_emitted)
+            ).one_or_none()
+        if saved[1]:
+        try:
+            return await self._complete_untranslated(event)
+        except IntegrityError:
+            logger.warning("payment_completion_conflict provider=%s", event.provider)
+            return PaymentCompletionOutcome.PAYMENT_MISMATCH
+
+    async def _complete_untranslated(self, event: PaymentEvent) -> PaymentCompletionOutcome:
             current.provider_checkout_id, current.checkout_url, current.status = (
                 checkout.provider_checkout_id,
                 checkout.url,

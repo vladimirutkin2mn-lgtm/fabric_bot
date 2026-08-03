@@ -219,6 +219,9 @@ class PaymentOrder(Base):
     currency: Mapped[str] = mapped_column(String(3))
     checkout_token: Mapped[UUID] = mapped_column(unique=True, default=uuid4)
     checkout_url: Mapped[str | None] = mapped_column(String(2048))
+    checkout_started_emitted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
     provider_checkout_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     provider_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     provider_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)

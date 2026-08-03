@@ -75,6 +75,7 @@ def upgrade() -> None:
         sa.Column("currency", sa.String(3), nullable=False),
         sa.Column("checkout_token", postgresql.UUID(), unique=True, nullable=False),
         sa.Column("checkout_url", sa.String(2048), nullable=True),
+        sa.Column("checkout_started_emitted", sa.Boolean(), server_default="false", nullable=False),
         sa.Column("provider_checkout_id", sa.String(255), unique=True),
         sa.Column("provider_payment_id", sa.String(255), unique=True),
         sa.Column("provider_event_id", sa.String(255), unique=True),
