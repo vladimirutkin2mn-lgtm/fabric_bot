@@ -27,6 +27,8 @@ class MockPaymentProvider:
         )
 
     async def create_checkout(self, request: CheckoutRequest) -> Checkout:
+        # The durable order ID is the provider idempotency key, so retries return
+        # the same checkout identity and opaque local URL.
         checkout_id = f"mock-{request.order_id}"
         return Checkout(
             self.name, checkout_id, f"{self._base}/payments/mock/checkout/{request.checkout_token}"
