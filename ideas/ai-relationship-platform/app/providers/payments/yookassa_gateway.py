@@ -1,5 +1,7 @@
 """YooKassa one-stage redirect adapter using its documented REST API."""
 
+from decimal import Decimal, InvalidOperation
+
 import httpx
 
 from app.providers.payments.base import PermanentProviderError, UnknownProviderOutcome
@@ -16,7 +18,10 @@ class YooKassaGateway:
 
     async def create_checkout(self, request: CreateCheckout) -> HostedCheckout:
         payload: dict[str, object] = {
-            "amount": {"value": f"{request.amount_minor / 100:.2f}", "currency": "RUB"},
+            "amount": {
+                "value": format(Decimal(request.amount_minor) / Decimal(100), ".2f"),
+                "currency": "RUB",
+            },
             "capture": True,
             "confirmation": {"type": "redirect", "return_url": request.success_url},
             "description": f"HeartSignal: {request.product_code}"[:128],
@@ -79,14 +84,35 @@ class YooKassaGateway:
         amount = value.get("amount", {})
         metadata = value.get("metadata", {})
         status = str(value.get("status", "unknown"))
+        try:
+            amount_minor = parse_minor_amount(amount.get("value"))
+        except ValueError as exc:
+            raise PermanentProviderError("malformed_amount") from exc
         return AuthoritativePayment(
             checkout_id=str(value.get("id", "")),
             payment_id=str(value.get("id", "")),
             status=status,
-            amount_minor=round(float(amount.get("value", "0")) * 100),
+            amount_minor=amount_minor,
             currency=str(amount.get("currency", "")),
             order_id=str(metadata.get("order_id", "")),
             paid=bool(value.get("paid")) and status == "succeeded",
             live_mode=not bool(value.get("test", False)),
             provider_status=status,
         )
+
+
+def parse_minor_amount(value: object) -> int:
+    """Parse a non-negative provider decimal with exactly zero-to-two fractional digits."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("amount must be a decimal string")
+    try:
+        amount = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError("malformed amount") from exc
+    exponent = amount.as_tuple().exponent
+    if not amount.is_finite() or amount < 0 or not isinstance(exponent, int) or exponent < -2:
+        raise ValueError("invalid amount precision")
+    minor = amount * 100
+    if minor != minor.to_integral_value():
+        raise ValueError("invalid amount precision")
+    return int(minor)

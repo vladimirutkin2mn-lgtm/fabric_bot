@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import BillingOutboxEvent, CreditTransaction, PaymentOrder, User
@@ -17,6 +18,18 @@ class PaymentCompletionService:
         self._sessions, self._production = sessions, production
 
     async def complete(self, order_id: UUID, payment: AuthoritativePayment) -> str:
+        try:
+            return await self._complete(order_id, payment)
+        except IntegrityError:
+            async with self._sessions() as session:
+                order = await session.get(PaymentOrder, order_id)
+                if order and order.status == "completed":
+                    return "already_completed"
+                if order and order.status in {"failed", "cancelled", "manual_review"}:
+                    return f"already_{order.status}"
+            return "identity_conflict"
+
+    async def _complete(self, order_id: UUID, payment: AuthoritativePayment) -> str:
         async with self._sessions.begin() as session:
             order0 = await session.get(PaymentOrder, order_id)
             if not order0:
@@ -30,13 +43,17 @@ class PaymentCompletionService:
                     if order.provider_payment_id == payment.payment_id
                     else "manual_review"
                 )
+            if order.status in {"failed", "cancelled", "manual_review"}:
+                return f"already_{order.status}"
             mismatch = self._mismatch(order, payment)
             if mismatch:
                 order.status, order.failure_code = "manual_review", mismatch
+                order.encrypted_receipt_contact = None
                 return "manual_review"
             if not payment.paid or payment.status != "succeeded":
                 if payment.status in {"failed", "canceled", "cancelled", "expired"}:
                     order.status, order.failure_code = "failed", f"provider_{payment.status}"
+                    order.encrypted_receipt_contact = None
                     self._outbox(session, order, "payment_failed")
                     return "failed"
                 order.provider_status = payment.provider_status or payment.status
@@ -49,8 +66,10 @@ class PaymentCompletionService:
             )
             if owner:
                 order.status, order.failure_code = "manual_review", "payment_identity_reused"
+                order.encrypted_receipt_contact = None
                 return "manual_review"
             order.status, order.completed_at = "completed", datetime.now(UTC)
+            order.encrypted_receipt_contact = None
             order.provider_payment_id, order.provider_status = (
                 payment.payment_id,
                 payment.provider_status or payment.status,

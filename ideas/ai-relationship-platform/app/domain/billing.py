@@ -59,13 +59,16 @@ class BillingCatalog:
                 reference = getattr(settings, attr)
                 # Price IDs are authoritative provider references. Empty references keep an
                 # offer visible to validation/routing while live flags remain disabled.
+                amount = getattr(
+                    settings, f"stripe_amount_{code.value}_{currency.lower()}_minor", rub_amount
+                )
                 self._add(
                     code,
                     credits,
                     BillingMarket.INTERNATIONAL,
                     PaymentProviderName.STRIPE,
                     currency,
-                    rub_amount,
+                    amount,
                     reference or f"unconfigured:{code}:{currency}",
                     subscription,
                 )

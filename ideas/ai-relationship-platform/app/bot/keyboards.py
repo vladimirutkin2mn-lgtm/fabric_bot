@@ -263,6 +263,32 @@ def checkout_keyboard(url: str) -> InlineKeyboardMarkup:
     )
 
 
+def payment_market_keyboard(product_code: str) -> InlineKeyboardMarkup:
+    """Require an explicit market/currency choice; never infer geography."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Россия · RUB", callback_data=f"credits:offer:{product_code}:RU:RUB"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="International · EUR",
+                    callback_data=f"credits:offer:{product_code}:INTERNATIONAL:EUR",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="International · USD",
+                    callback_data=f"credits:offer:{product_code}:INTERNATIONAL:USD",
+                )
+            ],
+            [InlineKeyboardButton(text="Вернуться", callback_data="menu:balance")],
+        ]
+    )
+
+
 def checkout_creating_keyboard(product_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

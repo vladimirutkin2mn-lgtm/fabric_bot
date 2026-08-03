@@ -23,6 +23,7 @@ from app.bot.keyboards import (
     history_keyboard,
     main_menu_keyboard,
     participant_keyboard,
+    payment_market_keyboard,
     paywall_keyboard,
     preview_actions_keyboard,
     products_keyboard,
@@ -30,9 +31,11 @@ from app.bot.keyboards import (
 )
 from app.bot.report_delivery import deliver_report
 from app.bot.states import IntakeStates, OnboardingStates
+from app.config import Settings
 from app.db.models import Analysis
 from app.domain.products import ProductCatalog
 from app.repositories.analyses import DeletionOutcome, FeedbackOutcome
+from app.services.checkout_service import CheckoutRejected, CheckoutService
 from app.services.conversation_intake import ConversationIntakeService, InvalidTransition
 from app.services.conversation_parser import ConversationRejected
 from app.services.credits_service import CreditsService
@@ -470,13 +473,23 @@ async def balance_screen(
 
 @router.callback_query(F.data.startswith("credits:buy:"))
 async def buy_credits(
-    callback: CallbackQuery, onboarding: OnboardingService, payments: PaymentService
+    callback: CallbackQuery,
+    onboarding: OnboardingService,
+    payments: PaymentService | None,
+    billing_settings: Settings,
 ) -> None:
     await callback.answer()
     user = await onboarding.current_user(callback.from_user.id)
     if user is None or not isinstance(callback.message, Message):
         return
-    outcome = await payments.create_checkout(user.id, _callback_parts(callback)[-1])
+    product_code = _callback_parts(callback)[-1]
+    if payments is None or billing_settings.billing_enabled:
+        await callback.message.answer(
+            "Выберите регион и валюту оплаты.",
+            reply_markup=payment_market_keyboard(product_code),
+        )
+        return
+    outcome = await payments.create_checkout(user.id, product_code)
     if outcome.outcome is CheckoutOutcome.CREATING:
         await callback.message.answer(
             "Тестовая оплата уже создаётся. Обновите экран через несколько секунд.",
@@ -492,6 +505,37 @@ async def buy_credits(
     await callback.message.answer(
         "Тестовая оплата — реальные деньги не списываются.",
         reply_markup=checkout_keyboard(outcome.checkout.url),
+    )
+
+
+@router.callback_query(F.data.startswith("credits:offer:"))
+async def create_production_checkout(
+    callback: CallbackQuery,
+    onboarding: OnboardingService,
+    checkout: CheckoutService,
+) -> None:
+    await callback.answer()
+    user = await onboarding.current_user(callback.from_user.id)
+    if user is None or not isinstance(callback.message, Message):
+        return
+    parts = _callback_parts(callback)
+    if len(parts) != 5:
+        await callback.message.answer("Этот вариант оплаты недоступен.")
+        return
+    _, _, product_code, market, currency = parts
+    try:
+        result = await checkout.create_one_time_checkout(user.id, product_code, market, currency)
+    except CheckoutRejected:
+        await callback.message.answer("Оплата сейчас недоступна. Попробуйте позже.")
+        return
+    if not result.url:
+        await callback.message.answer(
+            "Оплата создаётся. Попробуйте обновить через несколько секунд."
+        )
+        return
+    await callback.message.answer(
+        "Откройте защищённую страницу платёжного провайдера.",
+        reply_markup=checkout_keyboard(result.url),
     )
 
 

@@ -16,6 +16,17 @@ from app.providers.payments.base import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["payment-webhooks"])
+STRIPE_PAYMENT_EVENTS = {
+    "checkout.session.completed",
+    "checkout.session.async_payment_succeeded",
+    "checkout.session.async_payment_failed",
+    "checkout.session.expired",
+}
+YOOKASSA_PAYMENT_EVENTS = {
+    "payment.succeeded",
+    "payment.canceled",
+    "payment.waiting_for_capture",
+}
 
 
 def resolve_source_ip(peer: str, headers: Mapping[str, str], trusted: str) -> str:
@@ -100,6 +111,8 @@ async def stripe_webhook(request: Request) -> dict[str, str]:
         raise HTTPException(401, "invalid signature") from None
     except (PaymentPayloadError, KeyError, TypeError):
         raise HTTPException(400, "malformed event") from None
+    if event_type not in STRIPE_PAYMENT_EVENTS:
+        return {"status": "ignored"}
     await request.app.state.webhook_inbox.accept(
         "stripe", event_id, event_type, object_id, hashlib.sha256(body).hexdigest()
     )
@@ -110,6 +123,11 @@ async def stripe_webhook(request: Request) -> dict[str, str]:
 async def yookassa_webhook(request: Request) -> dict[str, str]:
     body = await _body(request)
     settings = request.app.state.settings
+    if (
+        not settings.yookassa_enabled
+        or PaymentProviderName.YOOKASSA not in request.app.state.payment_gateways
+    ):
+        raise HTTPException(503, "provider unavailable")
     peer = request.client.host if request.client else ""
     try:
         source = resolve_source_ip(peer, request.headers, settings.yookassa_trusted_proxy_allowlist)
@@ -122,10 +140,12 @@ async def yookassa_webhook(request: Request) -> dict[str, str]:
         event_type = str(value["event"])
         obj = value["object"]
         object_id = str(obj["id"])
-        if not event_type.startswith("payment.") or not object_id:
+        if not object_id:
             raise ValueError
     except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         raise HTTPException(400, "malformed event") from None
+    if event_type not in YOOKASSA_PAYMENT_EVENTS:
+        return {"status": "ignored"}
     event_id = hashlib.sha256(f"yookassa:{event_type}:{object_id}".encode()).hexdigest()
     await request.app.state.webhook_inbox.accept(
         "yookassa", event_id, event_type, object_id, hashlib.sha256(body).hexdigest()

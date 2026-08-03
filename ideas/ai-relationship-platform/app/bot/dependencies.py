@@ -15,6 +15,7 @@ from app.providers.payments.base import PaymentProvider
 from app.repositories.analyses import SqlAlchemyAnalysisRepository
 from app.repositories.users import SqlAlchemyUserRepository
 from app.services.analysis_service import create_analysis_service
+from app.services.checkout_service import CheckoutService
 from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.credits_service import CreditsService
@@ -35,14 +36,16 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
         analytics: AnalyticsClient,
         settings: Settings,
         llm: LLMClient,
-        payment_provider: PaymentProvider,
+        payment_provider: PaymentProvider | None,
         product_catalog: ProductCatalog,
+        checkout_service: CheckoutService,
     ) -> None:
         self._sessions = sessions
         self._analytics = analytics
         self._settings = settings
         self._llm = llm
         self._payment_provider, self._product_catalog = payment_provider, product_catalog
+        self._checkout_service = checkout_service
 
     async def __call__(
         self,
@@ -74,14 +77,20 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
             data["credits"] = credits
             data["previews"] = previews
             data["catalog"] = self._product_catalog
-            data["payments"] = PaymentService(
-                self._sessions,
-                self._product_catalog,
-                self._payment_provider,
-                self._analytics,
-                self._settings.payment_provider,
-                self._settings.checkout_creation_lease_seconds,
+            data["payments"] = (
+                PaymentService(
+                    self._sessions,
+                    self._product_catalog,
+                    self._payment_provider,
+                    self._analytics,
+                    self._settings.payment_provider,
+                    self._settings.checkout_creation_lease_seconds,
+                )
+                if self._payment_provider is not None
+                else None
             )
+            data["checkout"] = self._checkout_service
+            data["billing_settings"] = self._settings
             data["monetized"] = MonetizedAnalysisService(
                 self._sessions,
                 credits,

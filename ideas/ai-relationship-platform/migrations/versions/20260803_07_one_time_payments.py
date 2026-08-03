@@ -33,8 +33,9 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX ix_billing_jobs_claim ON billing_jobs(status, available_at, lease_until)"
     )
+    op.execute("ALTER TABLE billing_jobs ADD COLUMN claim_id uuid")
     op.execute(
-        "CREATE TABLE billing_outbox_events (id uuid PRIMARY KEY, aggregate_type varchar(64) NOT NULL, aggregate_id varchar(255) NOT NULL, event_type varchar(64) NOT NULL, payload jsonb NOT NULL DEFAULT '{}'::jsonb, idempotency_key varchar(255) NOT NULL UNIQUE, status varchar(32) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','completed','failed','manual_review')), attempt_count integer NOT NULL DEFAULT 0, available_at timestamptz NOT NULL DEFAULT now(), claimed_by varchar(255), claimed_at timestamptz, lease_until timestamptz, last_error_code varchar(64), created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz)"
+        "CREATE TABLE billing_outbox_events (id uuid PRIMARY KEY, aggregate_type varchar(64) NOT NULL, aggregate_id varchar(255) NOT NULL, event_type varchar(64) NOT NULL, payload jsonb NOT NULL DEFAULT '{}'::jsonb, idempotency_key varchar(255) NOT NULL UNIQUE, status varchar(32) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','completed','failed','manual_review')), attempt_count integer NOT NULL DEFAULT 0, available_at timestamptz NOT NULL DEFAULT now(), claimed_by varchar(255), claim_id uuid, claimed_at timestamptz, lease_until timestamptz, last_error_code varchar(64), created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz)"
     )
     op.execute(
         "CREATE INDEX ix_billing_outbox_claim ON billing_outbox_events(status, available_at, lease_until)"
@@ -44,6 +45,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TABLE billing_outbox_events")
     op.execute("DROP INDEX ix_billing_jobs_claim")
+    op.execute("ALTER TABLE billing_jobs DROP COLUMN claim_id")
     op.execute("DROP INDEX ix_payment_orders_reconciliation")
     op.execute("DROP INDEX uq_payment_orders_active")
     op.execute(

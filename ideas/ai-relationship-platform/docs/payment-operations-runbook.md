@@ -14,3 +14,17 @@ without copying customer/payment data into logs. Do not grant credits manually u
 identity, amount, currency, mode, metadata, and live mode match. Requeue transient jobs
 with their existing idempotency key. Outbox analytics failures never reverse payment.
 Subscriptions, recurring charges, refunds, disputes, and manual capture remain disabled.
+
+## Deployment topology
+
+Run the API, Telegram bot, and billing worker as separate processes sharing PostgreSQL.
+The worker command is:
+
+```bash
+python -m app.workers.billing
+```
+
+The `billing-worker` Compose service runs leased webhook/reconciliation jobs, periodically
+sweeps stale `creating` and `pending` orders, and delivers transactional outbox events.
+It polls at most once per second while idle and handles SIGTERM/SIGINT gracefully. The
+checkout kill switch is intentionally not consulted by this recovery process.

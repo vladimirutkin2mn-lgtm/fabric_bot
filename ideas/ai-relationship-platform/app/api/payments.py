@@ -23,7 +23,7 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 @router.get("/return/{token}", response_class=HTMLResponse)
 async def payment_return(token: UUID, request: Request) -> HTMLResponse:
     """Show internal state only; browser parameters can never complete an order."""
-    order = await request.app.state.payment_service.order_by_token(token)
+    order = await request.app.state.checkout_service.order_by_token(token)
     if order is None:
         raise HTTPException(404)
     label = {

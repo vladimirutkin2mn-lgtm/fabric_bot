@@ -5,6 +5,7 @@ import hmac
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -13,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Settings
 from app.db.models import BillingJob, BillingOutboxEvent, PaymentOrder, User
 from app.domain.billing import BillingCatalog, PurchaseMode
-from app.providers.payments.base import BillingMarket, PaymentProviderName, UnknownProviderOutcome
+from app.providers.payments.base import (
+    BillingMarket,
+    PaymentProviderName,
+    PermanentProviderError,
+    UnknownProviderOutcome,
+)
 from app.providers.payments.gateway import CreateCheckout, HostedCheckout, OneTimePaymentGateway
 
 
@@ -64,6 +70,15 @@ class CheckoutService:
             gateways,
         )
         self._cipher = ReceiptContactCipher(settings.content_encryption_key.get_secret_value())
+
+    async def order_by_token(self, token: UUID) -> PaymentOrder | None:
+        async with self._sessions() as session:
+            return cast(
+                PaymentOrder | None,
+                await session.scalar(
+                    select(PaymentOrder).where(PaymentOrder.checkout_token == token)
+                ),
+            )
 
     async def create_one_time_checkout(
         self,
@@ -175,6 +190,9 @@ class CheckoutService:
         except UnknownProviderOutcome:
             await self._unknown(order_id, attempt, offer.provider.value)
             return OneTimeCheckoutResult(order_id, token, None, "creating")
+        except PermanentProviderError:
+            await self._failed(order_id, attempt)
+            raise CheckoutRejected("provider rejected checkout") from None
         await self._save(order_id, attempt, checkout)
         return OneTimeCheckoutResult(order_id, token, checkout.url, "pending")
 
@@ -194,6 +212,7 @@ class CheckoutService:
                 value.expires_at,
             )
             order.provider_live_mode = value.live_mode
+            order.encrypted_receipt_contact = None
             session.add(
                 BillingOutboxEvent(
                     aggregate_type="payment_order",
@@ -210,13 +229,39 @@ class CheckoutService:
             if not order or order.checkout_creation_attempt_id != attempt:
                 return
             order.provider_status = "unknown"
+            key = f"reconcile:{order_id}"
+            job = await session.scalar(
+                select(BillingJob).where(BillingJob.idempotency_key == key).with_for_update()
+            )
+            if job is None:
+                session.add(
+                    BillingJob(
+                        job_type="payment_reconciliation",
+                        provider=provider,
+                        object_type="payment_order",
+                        object_id=str(order_id),
+                        idempotency_key=key,
+                    )
+                )
+            elif job.status in {"completed", "failed"}:
+                job.status = "pending"
+                job.available_at = datetime.now(UTC)
+
+    async def _failed(self, order_id: UUID, attempt: UUID) -> None:
+        async with self._sessions.begin() as session:
+            order = await session.get(PaymentOrder, order_id, with_for_update=True)
+            if not order or order.checkout_creation_attempt_id != attempt:
+                return
+            order.status = "failed"
+            order.failure_code = "provider_rejected_checkout"
+            order.encrypted_receipt_contact = None
             session.add(
-                BillingJob(
-                    job_type="payment_reconciliation",
-                    provider=provider,
-                    object_type="payment_order",
-                    object_id=str(order_id),
-                    idempotency_key=f"reconcile:{order_id}",
+                BillingOutboxEvent(
+                    aggregate_type="payment_order",
+                    aggregate_id=str(order.id),
+                    event_type="payment_failed",
+                    payload={"product_code": order.product_code, "provider": order.provider},
+                    idempotency_key=f"payment_failed:{order.id}",
                 )
             )
 

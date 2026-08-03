@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     stripe_price_analysis_single_usd: str = ""
     stripe_price_analysis_pack_5_eur: str = ""
     stripe_price_analysis_pack_5_usd: str = ""
+    stripe_amount_analysis_single_eur_minor: int = Field(default=499, gt=0)
+    stripe_amount_analysis_single_usd_minor: int = Field(default=599, gt=0)
+    stripe_amount_analysis_pack_5_eur_minor: int = Field(default=1999, gt=0)
+    stripe_amount_analysis_pack_5_usd_minor: int = Field(default=2399, gt=0)
     stripe_price_subscription_monthly_eur: str = ""
     stripe_price_subscription_monthly_usd: str = ""
     billing_worker_lease_seconds: int = Field(default=60, gt=0)
@@ -112,6 +116,15 @@ class Settings(BaseSettings):
             stripe_key and self.stripe_webhook_secret.get_secret_value()
         ):
             raise ValueError("Stripe configuration is incomplete")
+        if self.stripe_enabled and not all(
+            (
+                self.stripe_price_analysis_single_eur,
+                self.stripe_price_analysis_single_usd,
+                self.stripe_price_analysis_pack_5_eur,
+                self.stripe_price_analysis_pack_5_usd,
+            )
+        ):
+            raise ValueError("Stripe one-time Price configuration is incomplete")
         if self.stripe_enabled and stripe_key.startswith(("sk_test_", "rk_test_")):
             raise ValueError("Stripe test credentials are forbidden in production")
         if self.subscriptions_enabled and not (
