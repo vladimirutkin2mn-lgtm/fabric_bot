@@ -78,11 +78,7 @@ class MonetizedAnalysisService:
         try:
             outcome = await self._analysis.analyze(analysis_id, user_id)
             if outcome.status is AnalysisServiceStatus.COMPLETED and outcome.result is not None:
-                access = await self._set_access(analysis_id, user_id, "preview", 0, None)
-                if access is not AccessOutcome.UPDATED:
-                    await self._previews.release_preview(user_id, analysis_id)
-                    return MonetizedAnalysisResult(MonetizedStatus.NOT_READY)
-                consumed = await self._previews.consume_preview(user_id, analysis_id)
+                consumed = await self._previews.finalize_preview(user_id, analysis_id)
                 if consumed is not PreviewOutcome.CONSUMED:
                     await self._previews.release_preview(user_id, analysis_id)
                     return MonetizedAnalysisResult(MonetizedStatus.NOT_READY)
@@ -124,13 +120,16 @@ class MonetizedAnalysisService:
                 )
                 if access in {AccessOutcome.UPDATED, AccessOutcome.ALREADY_FULL_SAME_TRANSACTION}:
                     return MonetizedAnalysisResult(MonetizedStatus.FULL_COMPLETED, outcome.result)
-                return await self._refund_result(user_id, analysis_id, spent.transaction_id)
+                return await self._refund_result(
+                    user_id, analysis_id, spent.transaction_id, outcome.result
+                )
             if outcome.status is AnalysisServiceStatus.ALREADY_PROCESSING:
                 return MonetizedAnalysisResult(MonetizedStatus.ALREADY_PROCESSING)
             return await self._refund_result(user_id, analysis_id, spent.transaction_id)
         except asyncio.CancelledError:
             try:
-                await self._credits.refund(user_id, analysis_id, spent.transaction_id)
+                if not await self._has_full_access(user_id, analysis_id, spent.transaction_id):
+                    await self._credits.refund(user_id, analysis_id, spent.transaction_id)
             finally:
                 raise
         except Exception:
@@ -167,13 +166,14 @@ class MonetizedAnalysisService:
             )
         except asyncio.CancelledError:
             try:
-                await self._credits.refund(user_id, analysis_id, spent.transaction_id)
+                if not await self._has_full_access(user_id, analysis_id, spent.transaction_id):
+                    await self._credits.refund(user_id, analysis_id, spent.transaction_id)
             finally:
                 raise
         except Exception:
-            return await self._refund_result(user_id, analysis_id, spent.transaction_id)
+            return await self._refund_result(user_id, analysis_id, spent.transaction_id, result)
         if access not in {AccessOutcome.UPDATED, AccessOutcome.ALREADY_FULL_SAME_TRANSACTION}:
-            return await self._refund_result(user_id, analysis_id, spent.transaction_id)
+            return await self._refund_result(user_id, analysis_id, spent.transaction_id, result)
         return MonetizedAnalysisResult(MonetizedStatus.FULL_COMPLETED, result)
 
     async def _set_access(
@@ -203,20 +203,23 @@ class MonetizedAnalysisService:
             analysis.report_access, analysis.cost_units = access, cost
             analysis.full_access_transaction_id = transaction_id
             await session.flush()
-        async with self._sessions() as session:
-            persisted = await session.get(Analysis, analysis_id)
             if (
-                persisted is None
-                or persisted.report_access != access
-                or persisted.cost_units != cost
-                or persisted.full_access_transaction_id != transaction_id
+                analysis.report_access != access
+                or analysis.cost_units != cost
+                or analysis.full_access_transaction_id != transaction_id
             ):
                 return AccessOutcome.ACCESS_CONFLICT
         return AccessOutcome.UPDATED
 
     async def _refund_result(
-        self, user_id: UUID, analysis_id: UUID, spend_id: UUID
+        self,
+        user_id: UUID,
+        analysis_id: UUID,
+        spend_id: UUID,
+        result: AnalysisResult | None = None,
     ) -> MonetizedAnalysisResult:
+        if await self._has_full_access(user_id, analysis_id, spend_id):
+            return MonetizedAnalysisResult(MonetizedStatus.FULL_COMPLETED, result)
         refund = await self._credits.refund(user_id, analysis_id, spend_id)
         if refund is RefundOutcome.REFUNDED:
             status = MonetizedStatus.TECHNICAL_FAILURE_REFUNDED
@@ -226,6 +229,19 @@ class MonetizedAnalysisService:
         else:
             status = MonetizedStatus.TECHNICAL_FAILURE_REFUND_FAILED
         return MonetizedAnalysisResult(status)
+
+    async def _has_full_access(self, user_id: UUID, analysis_id: UUID, spend_id: UUID) -> bool:
+        async with self._sessions() as session:
+            analysis = await session.scalar(
+                select(Analysis).where(Analysis.id == analysis_id, Analysis.user_id == user_id)
+            )
+            return bool(
+                analysis is not None
+                and analysis.status == "completed"
+                and analysis.report_access == "full"
+                and analysis.cost_units == self._price
+                and analysis.full_access_transaction_id == spend_id
+            )
 
     async def _track(self, user_id: UUID, event: str, analysis_id: UUID) -> None:
         try:

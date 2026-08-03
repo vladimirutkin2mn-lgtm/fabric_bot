@@ -61,7 +61,13 @@ class User(Base):
         String(16), default="available", server_default="available"
     )
     free_preview_analysis_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("analyses.id", ondelete="SET NULL", use_alter=True), nullable=True
+        ForeignKey(
+            "analyses.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_users_preview_analysis",
+        ),
+        nullable=True,
     )
     free_preview_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -163,7 +169,13 @@ class Analysis(Base):
     report_access: Mapped[str] = mapped_column(String(16), default="none", server_default="none")
     cost_units: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     full_access_transaction_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("credit_transactions.id", ondelete="RESTRICT", use_alter=True), nullable=True
+        ForeignKey(
+            "credit_transactions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_analyses_full_transaction",
+        ),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

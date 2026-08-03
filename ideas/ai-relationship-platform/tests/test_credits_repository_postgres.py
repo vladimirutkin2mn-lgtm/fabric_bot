@@ -3,6 +3,7 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db.base import Base
 from app.db.models import Analysis, CreditTransaction, User
 from app.services.credits_service import CreditsService, RefundOutcome, SpendOutcome
+from app.services.preview_entitlement import PreviewEntitlementService, PreviewOutcome
+from tests.test_report_service import payload
 
 pytestmark = pytest.mark.postgres
 
@@ -99,3 +102,24 @@ async def test_cross_user_spend_never_exposes_or_refunds_owner_transaction(
             .where(CreditTransaction.type == "refund")
         )
     assert refunds == 0 and await service.balance(owner) == 0
+
+
+async def test_preview_finalization_updates_entitlement_and_access_atomically(
+    billing_db: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, analyses = await _user_and_analyses(billing_db, 1)
+    service = PreviewEntitlementService(billing_db)
+    assert await service.reserve_preview(user_id, analyses[0]) is PreviewOutcome.RESERVED
+    async with billing_db.begin() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        assert analysis is not None
+        analysis.status = "completed"
+        analysis.result_json = payload()
+        analysis.completed_at = datetime.now(UTC)
+    assert await service.finalize_preview(user_id, analyses[0]) is PreviewOutcome.CONSUMED
+    async with billing_db() as session:
+        analysis = await session.get(Analysis, analyses[0])
+        user = await session.get(User, user_id)
+        assert analysis is not None and user is not None
+        assert analysis.report_access == "preview" and analysis.cost_units == 0
+        assert user.free_preview_status == "consumed"

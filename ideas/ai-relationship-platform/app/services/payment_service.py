@@ -101,6 +101,14 @@ class PaymentService:
                     order.amount_minor,
                     order.currency,
                 )
+            if created:
+                request = CheckoutRequest(
+                    order.id,
+                    order.checkout_token,
+                    order.product_code,
+                    order.amount_minor,
+                    order.currency,
+                )
         try:
             checkout = await self._provider.create_checkout(request)
         except Exception:
