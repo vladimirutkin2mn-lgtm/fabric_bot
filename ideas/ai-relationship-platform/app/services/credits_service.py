@@ -115,36 +115,22 @@ class CreditsService:
             await session.flush()
             return SpendResult(SpendOutcome.SPENT, row.id, balance - amount)
 
-    async def refund(self, user_id: UUID, analysis_id: UUID, spend_id: UUID) -> RefundOutcome:
-        async with self._sessions.begin() as session:
-            spend = await session.scalar(
-                select(CreditTransaction).where(CreditTransaction.id == spend_id).with_for_update()
-            )
+    async def refund(
+        self, user_id: UUID, analysis_id: UUID, spend_id: UUID
+    ) -> RefundOutcome:
+        """Compatibility wrapper that delegates to the safe analysis-aware boundary."""
+        async with self._sessions() as session:
+            spend = await session.get(CreditTransaction, spend_id)
             if spend is None:
                 return RefundOutcome.SPEND_NOT_FOUND
             if spend.user_id != user_id or spend.analysis_id != analysis_id:
                 return RefundOutcome.AUTHORIZATION_MISMATCH
             if spend.type != "spend" or spend.amount >= 0:
                 return RefundOutcome.INVALID_SPEND
-            key = f"refund:{spend.id}"
-            if (
-                await session.scalar(
-                    select(CreditTransaction.id).where(CreditTransaction.idempotency_key == key)
-                )
-                is not None
-            ):
-                return RefundOutcome.ALREADY_REFUNDED
-            session.add(
-                CreditTransaction(
-                    user_id=spend.user_id,
-                    type="refund",
-                    amount=-spend.amount,
-                    idempotency_key=key,
-                    analysis_id=spend.analysis_id,
-                    reverses_transaction_id=spend.id,
-                )
-            )
-            return RefundOutcome.REFUNDED
+            expected_cost = -spend.amount
+        return await self.refund_if_not_full(
+            user_id, analysis_id, spend_id, expected_cost
+        )
 
     async def refund_if_not_full(
         self, user_id: UUID, analysis_id: UUID, spend_id: UUID, expected_cost: int
@@ -159,16 +145,16 @@ class CreditsService:
             if analysis is None:
                 return RefundOutcome.AUTHORIZATION_MISMATCH
             spend = await session.scalar(
-                select(CreditTransaction).where(CreditTransaction.id == spend_id).with_for_update()
+                select(CreditTransaction)
+                .where(CreditTransaction.id == spend_id)
+                .with_for_update()
             )
-            if (
-                spend is None
-                or spend.user_id != user_id
-                or spend.analysis_id != analysis_id
-                or spend.type != "spend"
-                or spend.amount != -expected_cost
-            ):
+            if spend is None:
+                return RefundOutcome.SPEND_NOT_FOUND
+            if spend.user_id != user_id or spend.analysis_id != analysis_id:
                 return RefundOutcome.AUTHORIZATION_MISMATCH
+            if spend.type != "spend" or spend.amount != -expected_cost:
+                return RefundOutcome.INVALID_SPEND
             if (
                 analysis.status == "completed"
                 and analysis.report_access == "full"
@@ -176,7 +162,6 @@ class CreditsService:
                 and analysis.cost_units == expected_cost
             ):
                 return RefundOutcome.ACCESS_ALREADY_GRANTED
-            key = f"refund:{spend.id}"
             existing = await session.scalar(
                 select(CreditTransaction.id).where(
                     CreditTransaction.reverses_transaction_id == spend.id
@@ -189,7 +174,7 @@ class CreditsService:
                     user_id=user_id,
                     type="refund",
                     amount=-spend.amount,
-                    idempotency_key=key,
+                    idempotency_key=f"refund:{spend.id}",
                     analysis_id=analysis_id,
                     reverses_transaction_id=spend.id,
                 )
