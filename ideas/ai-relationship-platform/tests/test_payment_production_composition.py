@@ -98,3 +98,8 @@ def test_yookassa_accepts_ipv4_ipv6_and_trusted_proxy_networks() -> None:
         yookassa_trusted_proxy_allowlist="10.0.0.0/8,2001:db8::/32",
     )
     assert settings.yookassa_enabled
+
+
+def test_production_billing_requires_at_least_one_gateway() -> None:
+    with pytest.raises(ValidationError):
+        production()

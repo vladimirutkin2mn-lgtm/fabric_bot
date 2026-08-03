@@ -109,6 +109,12 @@ class Settings(BaseSettings):
             raise ValueError("production billing requires an HTTPS public URL")
         if self.billing_enabled and self.payment_provider == "mock":
             raise ValueError("mock payment provider is forbidden in production")
+        if (
+            self.billing_enabled
+            and self.payment_provider != "mock"
+            and not (self.yookassa_enabled or self.stripe_enabled)
+        ):
+            raise ValueError("production billing requires an enabled payment provider")
         if self.analytics_enabled:
             raise ValueError("analytics delivery client is not configured")
         if self.yookassa_enabled and not (

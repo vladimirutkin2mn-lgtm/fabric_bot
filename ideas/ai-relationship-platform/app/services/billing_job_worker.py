@@ -111,29 +111,7 @@ class BillingJobWorker:
         if not checkout:
             checkout = await self._retry_checkout_creation(order_id)
         payment = await self._gateways[provider].fetch_payment(checkout)
-        outcome = await self._completion.complete(order.id, payment)
-        async with self._sessions.begin() as session:
-            current = await session.get(BillingJob, job_id, with_for_update=True)
-            owns_claim = current is not None and current.claim_id == claim_id
-            if current is not None and owns_claim:
-                current.status = (
-                    "manual_review"
-                    if outcome in {"manual_review", "identity_conflict"}
-                    else "completed"
-                )
-                current.lease_until = None
-                current.claim_id = None
-            if owns_claim and job.job_type == "webhook_processing":
-                event = await session.get(
-                    ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
-                )
-                if event is not None:
-                    event.status = (
-                        "manual_review"
-                        if outcome in {"manual_review", "identity_conflict"}
-                        else "completed"
-                    )
-                    event.processed_at = datetime.now(UTC)
+        await self._completion.complete_claimed(job_id, claim_id, order_id, payment)
 
     async def _retry_checkout_creation(self, order_id: UUID) -> str:
         async with self._sessions() as session:
@@ -189,6 +167,8 @@ class BillingJobWorker:
             job.claim_id = None
             if job.attempt_count >= self._max:
                 job.status = "manual_review"
+                job.last_error_code = "retry_exhausted"
+                await self._mark_related_manual(session, job, "retry_exhausted")
             else:
                 job.status = "pending"
                 job.available_at = datetime.now(UTC) + timedelta(
@@ -201,23 +181,29 @@ class BillingJobWorker:
             if job and job.claim_id == claim_id:
                 job.status, job.last_error_code, job.lease_until = "manual_review", code, None
                 job.claim_id = None
-                order: PaymentOrder | None = None
-                if job.job_type == "payment_reconciliation":
-                    order = await session.get(
-                        PaymentOrder, UUID(job.object_id), with_for_update=True
+                await self._mark_related_manual(session, job, code)
+
+    @staticmethod
+    async def _mark_related_manual(session: AsyncSession, job: BillingJob, code: str) -> None:
+        order: PaymentOrder | None = None
+        if job.job_type == "payment_reconciliation":
+            order = await session.get(PaymentOrder, UUID(job.object_id), with_for_update=True)
+        elif job.job_type == "webhook_processing":
+            event = await session.get(
+                ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
+            )
+            if event is not None:
+                event.status = "manual_review"
+                event.last_error_code = code
+                order = await session.scalar(
+                    select(PaymentOrder)
+                    .where(
+                        (PaymentOrder.provider_checkout_id == event.provider_object_id)
+                        | (PaymentOrder.provider_payment_id == event.provider_object_id)
                     )
-                elif job.job_type == "webhook_processing":
-                    event = await session.get(ProviderWebhookEvent, UUID(job.object_id))
-                    if event is not None:
-                        order = await session.scalar(
-                            select(PaymentOrder)
-                            .where(
-                                (PaymentOrder.provider_checkout_id == event.provider_object_id)
-                                | (PaymentOrder.provider_payment_id == event.provider_object_id)
-                            )
-                            .with_for_update()
-                        )
-                if order is not None and order.status in {"creating", "pending"}:
-                    order.status = "manual_review"
-                    order.failure_code = code
-                    order.encrypted_receipt_contact = None
+                    .with_for_update()
+                )
+        if order is not None and order.status in {"creating", "pending"}:
+            order.status = "manual_review"
+            order.failure_code = code
+            order.encrypted_receipt_contact = None

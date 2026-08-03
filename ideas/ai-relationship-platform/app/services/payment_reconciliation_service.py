@@ -17,7 +17,12 @@ class PaymentReconciliationSweeper:
     ) -> None:
         self._sessions = sessions
         self._stale = stale_seconds
-        self._supported = supported_providers or {"stripe", "yookassa"}
+        self._supported = (
+            {"stripe", "yookassa"} if supported_providers is None else supported_providers
+        )
+
+    def supports_provider(self, provider: str) -> bool:
+        return provider in self._supported
 
     async def enqueue_stale(self, limit: int = 100) -> int:
         now = datetime.now(UTC)
