@@ -17,6 +17,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -93,7 +94,9 @@ class Analysis(Base):
     relationship_stage: Mapped[str | None] = mapped_column(String(32))
     message_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     character_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    result_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    result_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     llm_provider: Mapped[str | None] = mapped_column(String(32))
     model_name: Mapped[str | None] = mapped_column(String(255))
     prompt_version: Mapped[str | None] = mapped_column(String(64))

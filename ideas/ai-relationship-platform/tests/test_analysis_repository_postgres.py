@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import (
 from app.db.base import Base
 from app.db.models import Analysis, User
 from app.providers.analytics import NoOpAnalyticsClient
-from app.providers.llm.base import LLMCompletion, LLMRequest
+from app.providers.llm.base import LLMCompletion, LLMRequest, LLMTimeoutError
 from app.providers.llm.stub import StubLLMClient
 from app.repositories.analyses import ClaimOutcome, LLMMetadata, SqlAlchemyAnalysisRepository
 from app.services.analysis_service import AnalysisService, AnalysisServiceStatus
@@ -92,10 +93,13 @@ async def test_milestone3_success_metadata_persists_across_sessions(
         assert (
             await repository.claim_processing(analysis.id, analysis.user_id) == ClaimOutcome.CLAIMED
         )
-        await repository.complete_processing(analysis.id, {"summary": "stored"}, metadata)
+        await repository.complete_processing(
+            analysis.id, {"summary": "stored", "nested": None}, metadata
+        )
     async with sessions() as session:
         stored = await session.get(Analysis, analysis.id)
         assert stored is not None and stored.status == "completed" and stored.result_json
+        assert stored.result_json["nested"] is None
         assert stored.completed_at is not None and stored.failure_code is None
         assert (stored.llm_provider, stored.model_name, stored.prompt_version) == (
             "stub",
@@ -250,6 +254,43 @@ async def test_failure_persists_without_result_or_completed_timestamp(
             and stored.completed_at is None
             and stored.failure_code == "llm_timeout"
         )
+        sql_null = await session.scalar(
+            select(Analysis.result_json.is_(None)).where(Analysis.id == analysis.id)
+        )
+        assert sql_null is True
+
+
+async def test_real_service_timeout_persists_sql_null_result(
+    postgres_m3: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = postgres_m3
+    analysis = await create_analysis(sessions)
+
+    class TimeoutLLM:
+        async def generate_analysis(self, request: LLMRequest) -> LLMCompletion:
+            raise LLMTimeoutError
+
+    async with sessions() as session:
+        result = await AnalysisService(
+            SqlAlchemyAnalysisRepository(session),
+            TimeoutLLM(),
+            NoOpAnalyticsClient(),
+            "stub",
+            "stub",
+        ).analyze(analysis.id, analysis.user_id)
+        assert result.status == AnalysisServiceStatus.FAILED
+        assert result.failure_code == "llm_timeout"
+    async with sessions() as session:
+        stored = await session.get(Analysis, analysis.id)
+        assert stored is not None and stored.status == "failed"
+        assert stored.result_json is None and stored.completed_at is None
+        assert stored.failure_code == "llm_timeout"
+        assert (
+            await session.scalar(
+                select(Analysis.result_json.is_(None)).where(Analysis.id == analysis.id)
+            )
+            is True
+        )
 
 
 async def test_real_service_stub_repository_demo_path(
@@ -285,6 +326,7 @@ async def test_real_service_stub_repository_demo_path(
         {"latency_ms": -1},
         {"status": "completed", "result_json": None, "completed_at": datetime.now(UTC)},
         {"status": "failed", "result_json": {"partial": True}, "failure_code": "safe"},
+        {"status": "failed", "result_json": JSONB.NULL, "failure_code": "safe"},
         {
             "status": "failed",
             "result_json": None,
