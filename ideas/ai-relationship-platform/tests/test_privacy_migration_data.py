@@ -116,3 +116,169 @@ def test_encrypted_content_refuses_downgrade_before_destructive_ddl(
         )
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+@pytest.mark.parametrize("reference", ["none", "ledger", "order"])
+def test_tombstone_and_financial_references_refuse_downgrade(reference: str) -> None:
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required")
+    schema = f"privacy_tombstone_{uuid4().hex}"
+    user_id, reference_id = uuid4(), uuid4()
+    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
+    environment = _environment(url, schema)
+    try:
+        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        asyncio.run(
+            _execute(
+                url,
+                schema,
+                "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) "
+                f"VALUES ('{user_id}',970002,'Migration','active')",
+            )
+        )
+        if reference == "ledger":
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "INSERT INTO credit_transactions "
+                    "(id,user_id,type,amount,idempotency_key) "
+                    f"VALUES ('{reference_id}','{user_id}','grant',1,"
+                    f"'migration-ledger-{reference_id}')",
+                )
+            )
+        elif reference == "order":
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "INSERT INTO payment_orders "
+                    "(id,user_id,provider,product_code,status,credits,amount_minor,currency,"
+                    "checkout_token,mode,market,product_version,commercial_snapshot) "
+                    f"VALUES ('{reference_id}','{user_id}','stripe','analysis_single','pending',"
+                    f"1,500,'EUR','{uuid4()}','one_time','INTERNATIONAL',1,'{{}}')",
+                )
+            )
+        asyncio.run(
+            _execute(
+                url,
+                schema,
+                "UPDATE users SET telegram_user_id=NULL,telegram_username=NULL,first_name=NULL,"
+                "telegram_language=NULL,privacy_status='deleted',deleted_at=now() "
+                f"WHERE id='{user_id}'",
+            )
+        )
+        failed = subprocess.run(
+            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
+        )
+        assert failed.returncode != 0 and "downgrade refused" in failed.stderr
+        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
+            "20260804_08"
+        )
+        assert (
+            asyncio.run(
+                _scalar(url, schema, f"SELECT privacy_status FROM users WHERE id='{user_id}'")
+            )
+            == "deleted"
+        )
+        if reference != "none":
+            table = "credit_transactions" if reference == "ledger" else "payment_orders"
+            assert (
+                asyncio.run(
+                    _scalar(url, schema, f"SELECT count(*) FROM {table} WHERE id='{reference_id}'")
+                )
+                == 1
+            )
+    finally:
+        asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+@pytest.mark.parametrize(
+    "identity_column",
+    ["provider_checkout_id", "provider_payment_id", "provider_event_id"],
+)
+def test_cross_provider_order_identity_refuses_legacy_unique_downgrade(
+    identity_column: str,
+) -> None:
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required")
+    schema = f"privacy_identity_{uuid4().hex}"
+    user_ids, order_ids = (uuid4(), uuid4()), (uuid4(), uuid4())
+    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
+    environment = _environment(url, schema)
+    try:
+        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        for index, provider in enumerate(("stripe", "yookassa")):
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) "
+                    f"VALUES ('{user_ids[index]}',{970010 + index},'Migration','active')",
+                )
+            )
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "INSERT INTO payment_orders "
+                    "(id,user_id,provider,product_code,status,credits,amount_minor,currency,"
+                    "checkout_token,mode,market,product_version,commercial_snapshot,"
+                    f"{identity_column}) VALUES ('{order_ids[index]}','{user_ids[index]}',"
+                    f"'{provider}','analysis_single','pending',1,500,'EUR','{uuid4()}',"
+                    "'one_time','INTERNATIONAL',1,'{}','shared-identity')",
+                )
+            )
+        failed = subprocess.run(
+            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
+        )
+        assert failed.returncode != 0 and "downgrade refused" in failed.stderr
+        assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM payment_orders")) == 2
+        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
+            "20260804_08"
+        )
+    finally:
+        asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+def test_cross_provider_ledger_identity_refuses_legacy_unique_downgrade() -> None:
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required")
+    schema = f"privacy_ledger_identity_{uuid4().hex}"
+    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
+    environment = _environment(url, schema)
+    try:
+        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        for index, provider in enumerate(("stripe", "yookassa")):
+            user_id, transaction_id = uuid4(), uuid4()
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) "
+                    f"VALUES ('{user_id}',{970020 + index},'Migration','active')",
+                )
+            )
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "INSERT INTO credit_transactions "
+                    "(id,user_id,type,amount,idempotency_key,external_payment_provider,"
+                    f"external_payment_id) VALUES ('{transaction_id}','{user_id}','grant',1,"
+                    f"'migration-ledger-{transaction_id}','{provider}','shared-ledger-id')",
+                )
+            )
+        failed = subprocess.run(
+            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
+        )
+        assert failed.returncode != 0 and "downgrade refused" in failed.stderr
+        assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM credit_transactions")) == 2
+        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
+            "20260804_08"
+        )
+    finally:
+        asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
