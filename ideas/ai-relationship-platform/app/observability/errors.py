@@ -83,11 +83,7 @@ def report_unexpected(
 def _safe_context(context: Mapping[str, str] | None) -> dict[str, str]:
     if context is None:
         return {}
-    return {
-        key: _safe_name(value)
-        for key, value in context.items()
-        if key in _ALLOWED_CONTEXT
-    }
+    return {key: _safe_name(value) for key, value in context.items() if key in _ALLOWED_CONTEXT}
 
 
 def _safe_name(value: str) -> str:
