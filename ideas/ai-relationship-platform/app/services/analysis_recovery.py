@@ -10,8 +10,9 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from app.db.models import Analysis
+from app.db.models import Analysis, CreditTransaction
 
 AfterLockHook = Callable[[tuple[UUID, ...]], Awaitable[None]]
 
@@ -31,13 +32,34 @@ _RETRYABLE_FAILURE_CODES = frozenset(
 class AnalysisRecoveryResult:
     examined: int
     requeued: int
+    financially_closed: int = 0
 
 
 class AnalysisRetryOutcome(StrEnum):
     REQUEUED = "requeued"
+    FINANCIALLY_CLOSED = "financially_closed"
     NOT_RETRYABLE = "not_retryable"
     NOT_FAILED = "not_failed"
     NOT_FOUND = "not_found"
+
+
+async def _refunded_analysis_ids(
+    session: AsyncSession, analysis_ids: tuple[UUID, ...]
+) -> frozenset[UUID]:
+    if not analysis_ids:
+        return frozenset()
+    spend = aliased(CreditTransaction)
+    refund = aliased(CreditTransaction)
+    rows = await session.scalars(
+        select(spend.analysis_id)
+        .join(refund, refund.reverses_transaction_id == spend.id)
+        .where(
+            spend.analysis_id.in_(analysis_ids),
+            spend.type == "spend",
+            refund.type == "refund",
+        )
+    )
+    return frozenset(value for value in rows if value is not None)
 
 
 async def requeue_stale_processing(
@@ -48,7 +70,7 @@ async def requeue_stale_processing(
     now: datetime | None = None,
     after_lock: AfterLockHook | None = None,
 ) -> AnalysisRecoveryResult:
-    """Return expired processing claims to a retryable draft state exactly once."""
+    """Recover expired processing claims without reopening refunded paid work."""
     if stale_after_seconds <= 0 or batch_size <= 0:
         raise ValueError("recovery bounds must be positive")
     cutoff = (now or datetime.now(UTC)) - timedelta(seconds=stale_after_seconds)
@@ -70,25 +92,54 @@ async def requeue_stale_processing(
         await session.commit()
         return AnalysisRecoveryResult(examined=0, requeued=0)
 
-    changed = cast(
-        CursorResult[object],
-        await session.execute(
-            update(Analysis)
-            .where(
-                Analysis.id.in_(ids),
-                Analysis.status == "processing",
-                Analysis.processing_started_at <= cutoff,
-            )
-            .values(
-                status="draft",
-                processing_started_at=None,
-                failure_code=None,
-                completed_at=None,
-            )
-        ),
-    )
+    refunded = await _refunded_analysis_ids(session, ids)
+    retryable = tuple(analysis_id for analysis_id in ids if analysis_id not in refunded)
+    requeued = 0
+    if retryable:
+        changed = cast(
+            CursorResult[object],
+            await session.execute(
+                update(Analysis)
+                .where(
+                    Analysis.id.in_(retryable),
+                    Analysis.status == "processing",
+                    Analysis.processing_started_at <= cutoff,
+                )
+                .values(
+                    status="draft",
+                    processing_started_at=None,
+                    failure_code=None,
+                    completed_at=None,
+                )
+            ),
+        )
+        requeued = changed.rowcount
+    closed = 0
+    if refunded:
+        changed = cast(
+            CursorResult[object],
+            await session.execute(
+                update(Analysis)
+                .where(
+                    Analysis.id.in_(refunded),
+                    Analysis.status == "processing",
+                    Analysis.processing_started_at <= cutoff,
+                )
+                .values(
+                    status="failed",
+                    processing_started_at=None,
+                    failure_code="worker_interrupted_refunded",
+                    completed_at=None,
+                )
+            ),
+        )
+        closed = changed.rowcount
     await session.commit()
-    return AnalysisRecoveryResult(examined=len(ids), requeued=changed.rowcount)
+    return AnalysisRecoveryResult(
+        examined=len(ids),
+        requeued=requeued,
+        financially_closed=closed,
+    )
 
 
 async def retry_failed_analysis(
@@ -96,7 +147,7 @@ async def retry_failed_analysis(
     analysis_id: UUID,
     user_id: UUID,
 ) -> AnalysisRetryOutcome:
-    """Requeue only known transient failures without changing financial state."""
+    """Requeue known transient failures unless the associated spend was refunded."""
     analysis = await session.scalar(
         select(Analysis)
         .where(Analysis.id == analysis_id, Analysis.user_id == user_id)
@@ -111,6 +162,9 @@ async def retry_failed_analysis(
     if analysis.failure_code not in _RETRYABLE_FAILURE_CODES:
         await session.rollback()
         return AnalysisRetryOutcome.NOT_RETRYABLE
+    if analysis.id in await _refunded_analysis_ids(session, (analysis.id,)):
+        await session.rollback()
+        return AnalysisRetryOutcome.FINANCIALLY_CLOSED
 
     analysis.status = "draft"
     analysis.processing_started_at = None
