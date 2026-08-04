@@ -147,4 +147,4 @@ def test_error_reporter_logs_exception_class_but_not_message(
 def test_logging_filter_adds_safe_placeholder() -> None:
     record = logging.LogRecord("test", logging.INFO, __file__, 1, "hello", (), None)
     assert CorrelationIdFilter().filter(record)
-    assert getattr(record, "correlation_id") == "-"
+    assert record.__dict__["correlation_id"] == "-"
