@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 from alembic import command
 from alembic.config import Config
 
@@ -15,7 +15,9 @@ _MIGRATION_LOCK_ID = 2_026_080_408
 
 
 def asyncpg_dsn(database_url: str) -> str:
-    """Convert SQLAlchemy's async driver URL to an asyncpg-compatible DSN."""
+    """Convert managed or SQLAlchemy PostgreSQL URLs to an asyncpg-compatible DSN."""
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql://", 1)
     return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
