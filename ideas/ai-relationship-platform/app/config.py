@@ -130,8 +130,6 @@ class Settings(BaseSettings):
             and not (self.yookassa_enabled or self.stripe_enabled)
         ):
             raise ValueError("production billing requires an enabled payment provider")
-        if self.analytics_enabled:
-            raise ValueError("analytics delivery client is not configured")
         if self.yookassa_enabled and not (
             self.yookassa_shop_id.get_secret_value() and self.yookassa_secret_key.get_secret_value()
         ):
