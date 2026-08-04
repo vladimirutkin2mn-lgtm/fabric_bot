@@ -20,7 +20,8 @@ CREATE FUNCTION scrub_telegram_updates_on_user_delete() RETURNS trigger AS $$
 BEGIN
     IF OLD.telegram_user_id IS NOT NULL AND NEW.telegram_user_id IS NULL THEN
         UPDATE telegram_update_inbox
-        SET payload_ciphertext = NULL,
+        SET telegram_user_id = NULL,
+            payload_ciphertext = NULL,
             status = 'failed',
             last_error_code = 'user_deleted',
             claimed_by = NULL,
@@ -31,6 +32,10 @@ BEGIN
             updated_at = now()
         WHERE telegram_user_id = OLD.telegram_user_id
           AND status IN ('pending', 'claimed');
+        UPDATE telegram_update_inbox
+        SET telegram_user_id = NULL,
+            updated_at = now()
+        WHERE telegram_user_id = OLD.telegram_user_id;
     END IF;
     RETURN NEW;
 END;
