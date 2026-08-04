@@ -13,7 +13,7 @@ def production(**changes: object) -> Settings:
         "app_env": "production",
         "database_url": "postgresql+asyncpg://u:p@db/x",
         "telegram_bot_token": SecretStr("123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-        "content_encryption_key": SecretStr("content-key"),
+        "content_encryption_key": SecretStr("test-only-strong-content-key-32-bytes"),
         "billing_enabled": True,
         "payment_public_base_url": "https://pay.example",
         "payment_provider": "production",

@@ -1,5 +1,6 @@
 """Transactional, idempotent privacy deletion without mutating the ledger."""
 
+import logging
 from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
@@ -14,10 +15,13 @@ from app.db.models import (
     BillingJob,
     BillingOutboxEvent,
     PaymentOrder,
+    ProviderWebhookEvent,
     Subscription,
     User,
 )
 from app.providers.analytics import AnalyticsClient
+
+logger = logging.getLogger(__name__)
 
 
 class DataDeletionOutcome(StrEnum):
@@ -53,7 +57,7 @@ class DataDeletionService:
             user.free_preview_status = "available"
             user.free_preview_analysis_id = None
         await self.session.commit()
-        await self.analytics.track(None, "analysis_deleted", {"analysis_id": str(analysis_id)})
+        await self._track("analysis_deleted", {"analysis_id": str(analysis_id)})
         return DataDeletionOutcome.DELETED
 
     async def delete_account(self, user_id: UUID) -> DataDeletionOutcome:
@@ -112,6 +116,30 @@ class DataDeletionService:
                 select(PaymentOrder.id).where(PaymentOrder.user_id == user_id)
             )
         )
+        provider_identifiers = list(
+            await self.session.scalars(
+                select(PaymentOrder.provider_checkout_id).where(
+                    PaymentOrder.user_id == user_id, PaymentOrder.provider_checkout_id.is_not(None)
+                )
+            )
+        )
+        provider_identifiers.extend(
+            await self.session.scalars(
+                select(PaymentOrder.provider_payment_id).where(
+                    PaymentOrder.user_id == user_id, PaymentOrder.provider_payment_id.is_not(None)
+                )
+            )
+        )
+        webhook_ids: list[str] = []
+        if provider_identifiers:
+            webhook_ids = [
+                str(value)
+                for value in await self.session.scalars(
+                    select(ProviderWebhookEvent.id).where(
+                        ProviderWebhookEvent.provider_object_id.in_(provider_identifiers)
+                    )
+                )
+            ]
         await self.session.execute(
             update(BillingCustomer)
             .where(BillingCustomer.user_id == user_id)
@@ -159,6 +187,30 @@ class DataDeletionService:
                     lease_until=None,
                 )
             )
+        if webhook_ids:
+            await self.session.execute(
+                update(BillingJob)
+                .where(
+                    BillingJob.job_type == "webhook_processing",
+                    BillingJob.object_id.in_(webhook_ids),
+                    BillingJob.status.in_(("pending", "claimed")),
+                )
+                .values(
+                    status="manual_review",
+                    last_error_code="user_deleted",
+                    claimed_by=None,
+                    claim_id=None,
+                    lease_until=None,
+                )
+            )
+            await self.session.execute(
+                update(ProviderWebhookEvent)
+                .where(
+                    ProviderWebhookEvent.id.in_([UUID(value) for value in webhook_ids]),
+                    ProviderWebhookEvent.status.in_(("pending", "processing")),
+                )
+                .values(status="manual_review", last_error_code="user_deleted", processed_at=now)
+            )
         await self.session.execute(
             update(PaymentOrder)
             .where(PaymentOrder.user_id == user_id)
@@ -176,8 +228,15 @@ class DataDeletionService:
         user.free_preview_analysis_id = user.free_preview_used_at = None
         user.privacy_status, user.deleted_at = "deleted", now
         await self.session.commit()
-        await self.analytics.track(None, "all_data_deleted", {})
+        await self._track("all_data_deleted", {"user_id": str(user_id)})
         return DataDeletionOutcome.DELETED
+
+    async def _track(self, event: str, properties: dict[str, str]) -> None:
+        """Deletion is authoritative after commit; analytics is best-effort and identity-free."""
+        try:
+            await self.analytics.track(None, event, properties)
+        except Exception:
+            logger.warning("privacy_analytics_failed event=%s", event)
 
     @staticmethod
     def _clear_analysis(analysis: Analysis, now: datetime) -> None:

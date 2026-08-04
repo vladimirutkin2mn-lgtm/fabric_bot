@@ -238,7 +238,11 @@ async def test_reset_persists_cleared_sensitive_fields(
     _, sessions = postgres
     user = await _persist_user(sessions, 204)
     async with sessions() as session:
-        repository = SqlAlchemyAnalysisRepository(session)
+        from app.services.sensitive_content import AESGCMSensitiveContentCipher
+
+        repository = SqlAlchemyAnalysisRepository(
+            session, AESGCMSensitiveContentCipher("test-only-strong-content-key-32-bytes"), 30
+        )
         service = ConversationIntakeService(repository, ConversationParser(), NoOpAnalyticsClient())
         draft, _ = await repository.create_or_resume(user.id)
         await service.submit(draft, "A: one\nB: two\nA: three\nB: four")
@@ -247,10 +251,14 @@ async def test_reset_persists_cleared_sensitive_fields(
         await service.reset_conversation(draft)
         draft_id = draft.id
     async with sessions() as session:
+        from app.db.models import AnalysisPrivateContent
+
         stored = await SqlAlchemyAnalysisRepository(session).get_owned(draft_id, user.id)
         assert stored is not None and stored.intake_step == "waiting_for_conversation"
         assert stored.normalized_conversation_json is None and stored.participants_json is None
         assert stored.user_goal is None and stored.user_participant_label is None
+        private = await session.get(AnalysisPrivateContent, draft_id)
+        assert private is not None and private.source_ciphertext is None
 
 
 async def test_stale_callbacks_cannot_mutate_completed_analysis_with_active_successor(
