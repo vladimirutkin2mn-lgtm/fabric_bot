@@ -7,9 +7,10 @@ from enum import StrEnum
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from app.db.telegram_models import TelegramUpdateInbox
 from app.services.sensitive_content import (
@@ -120,19 +121,29 @@ class TelegramUpdateInboxService:
         now: datetime | None = None,
         after_lock: AfterLockHook | None = None,
     ) -> ClaimedTelegramUpdate | None:
+        """Claim the oldest available update without overtaking an earlier user update."""
         timestamp = now or datetime.now(UTC)
+        candidate = aliased(TelegramUpdateInbox)
+        earlier = aliased(TelegramUpdateInbox)
+        earlier_for_user = exists(
+            select(1).where(
+                earlier.telegram_user_id == candidate.telegram_user_id,
+                earlier.update_id < candidate.update_id,
+                earlier.status.in_(("pending", "claimed")),
+            )
+        )
         async with self._sessions.begin() as session:
             row = await session.scalar(
-                select(TelegramUpdateInbox)
+                select(candidate)
                 .where(
-                    TelegramUpdateInbox.available_at <= timestamp,
+                    candidate.available_at <= timestamp,
                     or_(
-                        TelegramUpdateInbox.status == "pending",
-                        (TelegramUpdateInbox.status == "claimed")
-                        & (TelegramUpdateInbox.lease_until < timestamp),
+                        candidate.status == "pending",
+                        (candidate.status == "claimed") & (candidate.lease_until < timestamp),
                     ),
+                    or_(candidate.telegram_user_id.is_(None), ~earlier_for_user),
                 )
-                .order_by(TelegramUpdateInbox.available_at, TelegramUpdateInbox.update_id)
+                .order_by(candidate.available_at, candidate.update_id)
                 .with_for_update(skip_locked=True)
                 .limit(1)
             )
