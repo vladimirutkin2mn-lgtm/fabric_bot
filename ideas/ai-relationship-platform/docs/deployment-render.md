@@ -6,7 +6,7 @@ This runbook describes the first supported production topology for HeartSignal. 
 
 - `heartsignal-api` receives HTTPS health checks, Telegram updates and payment webhooks. In webhook mode the API owns the aiogram `Bot` and `Dispatcher`; do not deploy the standalone polling bot.
 - `heartsignal-billing-worker` processes durable billing jobs, payment reconciliation and the billing outbox. Billing remains disabled until provider credentials and product configuration are complete.
-- `heartsignal-maintenance-worker` clears expired encrypted source content and requeues analyses left in `processing` beyond the configured lease.
+- `heartsignal-maintenance-worker` clears expired encrypted source content and recovers analyses left in `processing` beyond the configured lease.
 - `heartsignal-db` is the source of truth for product, billing, deletion, analytics and job state.
 
 The image runs as a non-root user, exposes `/health/live` and `/health/ready`, and handles `SIGTERM` with a bounded graceful-shutdown window.
@@ -60,7 +60,10 @@ For a code rollback, redeploy a previously known-good image or commit. Before ro
 
 Billing jobs and outbox work use durable database state, leases, idempotency keys and stale-claim takeover. A restart can repeat an attempt but must not duplicate a purchase, refund or credit grant.
 
-Analysis execution remains request-scoped in this MVP. The maintenance worker finds analyses whose `processing_started_at` exceeds `ANALYSIS_PROCESSING_STALE_SECONDS` and atomically returns them to `draft` with `FOR UPDATE SKIP LOCKED`. The original interrupted request can no longer commit a terminal result after that state transition.
+Analysis execution remains request-scoped in this MVP. The maintenance worker finds analyses whose `processing_started_at` exceeds `ANALYSIS_PROCESSING_STALE_SECONDS` and locks bounded batches with `FOR UPDATE SKIP LOCKED`.
+
+- An unpaid preview or a paid analysis whose spend is still active returns atomically to `draft`. The original interrupted request can no longer commit a terminal result after that state transition.
+- A paid analysis whose spend has already been refunded becomes `failed` with `worker_interrupted_refunded`. It is financially closed and is never reopened automatically.
 
 For a known transient failed analysis, requeue it explicitly:
 
@@ -70,7 +73,7 @@ python -m app.cli.retry_analysis \
   --user-id <user-uuid>
 ```
 
-The command rejects permanent validation failures and non-failed analyses. After requeueing, repeat the original preview/full action so the existing entitlement and ledger rules are applied again. Do not update analysis status manually in SQL.
+The command rejects permanent validation failures, non-failed analyses and analyses whose credit spend was refunded. After a successful requeue, repeat the original preview/full action so the existing entitlement and ledger rules are applied again. For a refunded paid analysis, start a new analysis; the original credit has already been returned. Do not update analysis status manually in SQL.
 
 ## Operations checklist
 
