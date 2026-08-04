@@ -1,7 +1,9 @@
 """Bounded, lock-safe source retention cleanup."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +23,7 @@ async def cleanup_expired_source(
     batch_size: int = 100,
     dry_run: bool = False,
     now: datetime | None = None,
+    after_lock: Callable[[tuple[UUID, ...]], Awaitable[None]] | None = None,
 ) -> RetentionResult:
     cutoff = now or datetime.now(UTC)
     analyses = list(
@@ -38,6 +41,8 @@ async def cleanup_expired_source(
             )
         ).all()
     )
+    if after_lock is not None:
+        await after_lock(tuple(analysis.id for analysis in analyses))
     if dry_run:
         await session.rollback()
         return RetentionResult(len(analyses), 0)

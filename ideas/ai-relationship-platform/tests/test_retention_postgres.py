@@ -98,11 +98,35 @@ async def test_two_skip_locked_workers_partition_expired_rows(
                 )
             )
 
-    async def worker() -> int:
-        async with payment_db() as session:
-            return (await cleanup_expired_source(session, batch_size=10)).cleared
+    first_selected = asyncio.Event()
+    second_selected = asyncio.Event()
+    batches: list[tuple[object, ...]] = []
 
-    cleared = await asyncio.gather(worker(), worker())
+    async def first_hook(ids: tuple[object, ...]) -> None:
+        batches.append(ids)
+        first_selected.set()
+        await asyncio.wait_for(second_selected.wait(), timeout=5)
+
+    async def second_hook(ids: tuple[object, ...]) -> None:
+        batches.append(ids)
+        second_selected.set()
+
+    async def first_worker() -> int:
+        async with payment_db() as session:
+            return (
+                await cleanup_expired_source(session, batch_size=10, after_lock=first_hook)
+            ).cleared
+
+    async def second_worker() -> int:
+        await asyncio.wait_for(first_selected.wait(), timeout=5)
+        async with payment_db() as session:
+            return (
+                await cleanup_expired_source(session, batch_size=10, after_lock=second_hook)
+            ).cleared
+
+    cleared = await asyncio.gather(first_worker(), second_worker())
+    assert len(batches) == 2 and all(batches)
+    assert set(batches[0]).isdisjoint(batches[1])
     assert sum(cleared) == 20
     async with payment_db() as session:
         assert (await cleanup_expired_source(session, batch_size=100)).cleared == 0
