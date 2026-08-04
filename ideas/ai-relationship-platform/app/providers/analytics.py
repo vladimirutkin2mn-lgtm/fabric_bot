@@ -189,9 +189,7 @@ class ResilientAnalyticsClient:
             logger.warning("analytics_delivery_failed event=%s", _safe_event_for_log(event))
 
 
-def validate_event_properties(
-    event: str, properties: Mapping[str, str] | None
-) -> dict[str, str]:
+def validate_event_properties(event: str, properties: Mapping[str, str] | None) -> dict[str, str]:
     """Return a validated copy containing only short, structured metadata."""
     allowed = _EVENT_PROPERTIES.get(event)
     if allowed is None:
@@ -205,12 +203,12 @@ def validate_event_properties(
         if key in _UUID_KEYS:
             try:
                 UUID(value)
-            except ValueError as error:
+            except ValueError:
                 raise AnalyticsContractError from None
         elif key in _INTEGER_KEYS:
             try:
                 int(value)
-            except ValueError as error:
+            except ValueError:
                 raise AnalyticsContractError from None
         elif _SAFE_VALUE.fullmatch(value) is None:
             raise AnalyticsContractError
