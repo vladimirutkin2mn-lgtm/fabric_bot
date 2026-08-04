@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -132,14 +133,14 @@ async def test_two_recovery_workers_partition_stale_claims(
 
     first_selected = asyncio.Event()
     second_selected = asyncio.Event()
-    batches: list[tuple[object, ...]] = []
+    batches: list[tuple[UUID, ...]] = []
 
-    async def first_hook(ids: tuple[object, ...]) -> None:
+    async def first_hook(ids: tuple[UUID, ...]) -> None:
         batches.append(ids)
         first_selected.set()
         await asyncio.wait_for(second_selected.wait(), timeout=5)
 
-    async def second_hook(ids: tuple[object, ...]) -> None:
+    async def second_hook(ids: tuple[UUID, ...]) -> None:
         batches.append(ids)
         second_selected.set()
 
