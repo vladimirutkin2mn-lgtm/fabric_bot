@@ -9,13 +9,14 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-_SAFE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}\Z")
+_SAFE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,127}\Z")
 _UUID_KEYS = frozenset({"analysis_id", "order_id", "transaction_id", "user_id"})
 _INTEGER_KEYS = frozenset(
     {
         "amount_minor",
         "attempt_count",
         "character_count_bucket",
+        "chunk_count_bucket",
         "credits",
         "message_count_bucket",
         "score",
@@ -105,6 +106,10 @@ _EVENT_PROPERTIES: dict[str, frozenset[str]] = {
         }
     ),
     "analysis_feedback_submitted": frozenset({"analysis_id", "score"}),
+    "analysis_history_opened": frozenset({"analysis_id"}),
+    "analysis_report_delivered": frozenset(
+        {"analysis_id", "source", "chunk_count_bucket"}
+    ),
     "reply_suggestions_requested": frozenset({"analysis_id"}),
     "followup_requested": frozenset({"analysis_id"}),
     "analysis_deleted": frozenset({"analysis_id"}),
@@ -136,6 +141,8 @@ _EVENT_SCOPES: dict[str, EventScope] = {
     "all_data_deleted": EventScope.ACCOUNT,
     "main_menu_opened": EventScope.ACTION,
     "conversation_rejected": EventScope.ACTION,
+    "analysis_history_opened": EventScope.ACTION,
+    "analysis_report_delivered": EventScope.ACTION,
     "reply_suggestions_requested": EventScope.ACTION,
     "followup_requested": EventScope.ACTION,
 }
