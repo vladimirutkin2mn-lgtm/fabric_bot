@@ -166,11 +166,19 @@ async def test_complete_account_tombstone_preserves_immutable_ledger(
                 user_id=user.id,
                 status=status,
                 intake_step="complete",
+                normalized_conversation_json=[{"text": sentinel}],
+                participants_json={"A": sentinel, "B": "Other"},
+                user_participant_label="A",
                 user_goal=sentinel,
+                relationship_stage="dating",
+                message_count=4,
+                character_count=len(sentinel),
                 result_json={"private": sentinel} if status == "completed" else None,
                 completed_at=now if status == "completed" else None,
                 failure_code="safe" if status == "failed" else None,
                 report_access="full" if status == "completed" else "none",
+                feedback_score=5 if status == "completed" else None,
+                feedback_submitted_at=now if status == "completed" else None,
             )
             session.add(analysis)
             await session.flush()
@@ -182,6 +190,15 @@ async def test_complete_account_tombstone_preserves_immutable_ledger(
                 )
             )
             analyses.append(analysis)
+        unrelated_analysis = Analysis(
+            user_id=unrelated.id,
+            status="draft",
+            intake_step="complete",
+            user_goal="unrelated-goal",
+            message_count=2,
+            character_count=10,
+        )
+        session.add(unrelated_analysis)
         customer = BillingCustomer(
             user_id=user.id, provider="stripe", provider_customer_id=sentinel
         )
@@ -284,6 +301,16 @@ async def test_complete_account_tombstone_preserves_immutable_ledger(
             transaction.external_payment_provider,
             transaction.external_payment_id,
         )
+        ledger_count = await session.scalar(select(func.count()).select_from(CreditTransaction))
+        unrelated_snapshot = (
+            unrelated.id,
+            unrelated.telegram_user_id,
+            unrelated.first_name,
+            unrelated.privacy_status,
+            unrelated_analysis.id,
+            unrelated_analysis.status,
+            unrelated_analysis.user_goal,
+        )
         references = (customer.id, subscription.id, pending_order.id, event.id, unrelated.id)
     async with payment_db() as session:
         assert (
@@ -297,11 +324,24 @@ async def test_complete_account_tombstone_preserves_immutable_ledger(
         assert stored_user.telegram_user_id is None and stored_user.telegram_username is None
         assert stored_user.first_name is None and stored_user.telegram_language is None
         assert stored_user.consent_version is None and stored_user.consent_accepted_at is None
+        assert stored_user.age_confirmed is False and stored_user.age_confirmed_at is None
+        assert stored_user.onboarding_completed is False
+        assert stored_user.free_preview_status == "available"
+        assert stored_user.free_preview_analysis_id is None
+        assert stored_user.free_preview_used_at is None
         for analysis_id in analysis_ids:
             stored_analysis = await session.get(Analysis, analysis_id)
             private = await session.get(AnalysisPrivateContent, analysis_id)
             assert stored_analysis is not None and stored_analysis.status == "deleted"
-            assert stored_analysis.user_goal is None and stored_analysis.result_json is None
+            assert stored_analysis.normalized_conversation_json is None
+            assert stored_analysis.participants_json is None
+            assert stored_analysis.user_participant_label is None
+            assert stored_analysis.user_goal is None and stored_analysis.relationship_stage is None
+            assert stored_analysis.result_json is None and stored_analysis.completed_at is None
+            assert stored_analysis.message_count == 0 and stored_analysis.character_count == 0
+            assert stored_analysis.report_access == "none"
+            assert stored_analysis.feedback_score is None
+            assert stored_analysis.feedback_submitted_at is None
             assert private is not None
             assert private.source_ciphertext is None and private.result_ciphertext is None
         stored_customer = await session.get(BillingCustomer, references[0])
@@ -316,6 +356,16 @@ async def test_complete_account_tombstone_preserves_immutable_ledger(
         assert stored_order.encrypted_receipt_contact is None
         assert stored_event is not None and stored_event.status == "manual_review"
         assert stored_unrelated is not None and stored_unrelated.privacy_status == "active"
+        stored_unrelated_analysis = await session.get(Analysis, unrelated_snapshot[4])
+        assert (
+            stored_unrelated.id,
+            stored_unrelated.telegram_user_id,
+            stored_unrelated.first_name,
+            stored_unrelated.privacy_status,
+            stored_unrelated_analysis.id if stored_unrelated_analysis else None,
+            stored_unrelated_analysis.status if stored_unrelated_analysis else None,
+            stored_unrelated_analysis.user_goal if stored_unrelated_analysis else None,
+        ) == unrelated_snapshot
         for job_id in job_ids:
             stored_job = await session.get(BillingJob, job_id)
             assert stored_job is not None and stored_job.status == "manual_review"
@@ -331,6 +381,10 @@ async def test_complete_account_tombstone_preserves_immutable_ledger(
             ledger.external_payment_provider,
             ledger.external_payment_id,
         ) == transaction_snapshot
+        assert (
+            await session.scalar(select(func.count()).select_from(CreditTransaction))
+            == ledger_count
+        )
     async with payment_db() as session:
         assert (
             await DataDeletionService(session, NoOpAnalyticsClient()).delete_account(user_id)
