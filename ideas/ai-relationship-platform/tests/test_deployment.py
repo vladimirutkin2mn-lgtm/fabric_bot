@@ -52,9 +52,7 @@ def test_webhook_policy_accepts_local_and_strong_production_urls(settings: Setti
         ("https://example.com/telegram/webhook", "unsafe secret value"),
     ],
 )
-def test_production_webhook_policy_fails_closed(
-    settings: Settings, url: str, secret: str
-) -> None:
+def test_production_webhook_policy_fails_closed(settings: Settings, url: str, secret: str) -> None:
     configured = settings.model_copy(
         update={
             "app_env": "production",
