@@ -6,7 +6,11 @@ from pydantic import SecretStr, ValidationError
 from app.cli.release import asyncpg_dsn
 from app.config import Settings
 from app.db.session import normalize_async_database_url
-from app.deployment import DeploymentSettings, validate_telegram_webhook
+from app.deployment import (
+    DeploymentSettings,
+    validate_telegram_webhook,
+    validate_telegram_worker,
+)
 
 
 def test_managed_postgres_urls_select_asyncpg() -> None:
@@ -63,6 +67,29 @@ def test_production_webhook_policy_fails_closed(settings: Settings, url: str, se
     )
     with pytest.raises(ValueError):
         validate_telegram_webhook(configured)
+
+
+def test_telegram_worker_lease_covers_configured_llm_budget(settings: Settings) -> None:
+    webhook_settings = settings.model_copy(
+        update={
+            "telegram_webhook_url": "https://example.com/telegram/webhook",
+            "telegram_webhook_secret": SecretStr("a" * 32),
+        }
+    )
+    validate_telegram_worker(
+        webhook_settings,
+        DeploymentSettings(telegram_update_lease_seconds=300),
+    )
+    with pytest.raises(ValueError, match="shorter than"):
+        validate_telegram_worker(
+            webhook_settings,
+            DeploymentSettings(telegram_update_lease_seconds=120),
+        )
+
+
+def test_telegram_worker_requires_webhook_mode(settings: Settings) -> None:
+    with pytest.raises(ValueError, match="requires webhook mode"):
+        validate_telegram_worker(settings, DeploymentSettings())
 
 
 def test_deployment_settings_reject_unbounded_values() -> None:
