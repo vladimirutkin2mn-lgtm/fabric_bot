@@ -34,9 +34,6 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"app/prompts" = "app/prompts"
-
 [tool.ruff]
 target-version = "py312"
 line-length = 100
