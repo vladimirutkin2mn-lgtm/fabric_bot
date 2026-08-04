@@ -64,6 +64,7 @@ async def _seed_metrics(engine: AsyncEngine) -> str:
                 privacy_status="active",
             )
         )
+        await session.flush()
         session.add_all(
             [
                 Analysis(
@@ -129,6 +130,7 @@ async def _seed_metrics(engine: AsyncEngine) -> str:
                 completed_at=now,
             )
         )
+        await session.flush()
         session.add(
             CreditTransaction(
                 user_id=user_id,
