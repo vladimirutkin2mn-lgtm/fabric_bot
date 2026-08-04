@@ -10,7 +10,11 @@ from aiogram import Bot
 from app.bot.main import close_dispatcher, create_dispatcher
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
-from app.deployment import DeploymentSettings, get_deployment_settings
+from app.deployment import (
+    DeploymentSettings,
+    get_deployment_settings,
+    validate_telegram_worker,
+)
 from app.logging import configure_logging
 from app.observability.settings import get_observability_settings
 from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
@@ -25,8 +29,7 @@ async def run(
 ) -> None:
     resolved = settings or get_settings()
     runtime = deployment or get_deployment_settings()
-    if not resolved.webhook_enabled:
-        raise ValueError("Telegram update worker requires webhook mode")
+    validate_telegram_worker(resolved, runtime)
     configure_logging(resolved.log_level)
     engine = create_engine(str(resolved.database_url))
     sessions = create_session_factory(engine)
