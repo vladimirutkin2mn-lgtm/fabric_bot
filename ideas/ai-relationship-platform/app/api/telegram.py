@@ -17,9 +17,7 @@ router = APIRouter(tags=["telegram"])
 @router.post("/telegram/webhook", status_code=status.HTTP_204_NO_CONTENT)
 async def telegram_webhook(
     request: Request,
-    telegram_secret: Annotated[
-        str | None, Header(alias="X-Telegram-Bot-Api-Secret-Token")
-    ] = None,
+    telegram_secret: Annotated[str | None, Header(alias="X-Telegram-Bot-Api-Secret-Token")] = None,
 ) -> Response:
     """Validate Telegram's secret header and feed one bounded update to aiogram."""
     settings = cast(Settings, request.app.state.settings)
@@ -60,7 +58,9 @@ async def telegram_webhook(
         bot = cast(Bot, request.app.state.telegram_bot)
         update = Update.model_validate(payload, context={"bot": bot})
     except (json.JSONDecodeError, ValidationError, TypeError):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid update") from None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid update"
+        ) from None
 
     dispatcher = cast(Dispatcher, request.app.state.telegram_dispatcher)
     await dispatcher.feed_update(bot, update)
