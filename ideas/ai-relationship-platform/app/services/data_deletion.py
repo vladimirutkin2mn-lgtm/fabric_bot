@@ -68,6 +68,61 @@ class DataDeletionService:
         if user.privacy_status == "deleted":
             await self.session.commit()
             return DataDeletionOutcome.ALREADY_DELETED
+        # Canonical privacy/billing mutation lock order:
+        # User -> PaymentOrder -> BillingJob -> ProviderWebhookEvent -> Analysis -> private content.
+        discovered_orders = list(
+            (
+                await self.session.execute(
+                    select(
+                        PaymentOrder.id,
+                        PaymentOrder.provider,
+                        PaymentOrder.provider_checkout_id,
+                        PaymentOrder.provider_payment_id,
+                    ).where(PaymentOrder.user_id == user_id)
+                )
+            ).tuples()
+        )
+        discovered_order_ids = [row[0] for row in discovered_orders]
+        if discovered_order_ids:
+            await self.session.scalars(
+                select(PaymentOrder)
+                .where(PaymentOrder.id.in_(discovered_order_ids))
+                .order_by(PaymentOrder.id)
+                .with_for_update()
+            )
+        identity_pairs = [
+            (row[1], value)
+            for row in discovered_orders
+            for value in (row[2], row[3])
+            if value is not None
+        ]
+        discovered_event_ids: list[UUID] = []
+        if identity_pairs:
+            discovered_event_ids = list(
+                await self.session.scalars(
+                    select(ProviderWebhookEvent.id).where(
+                        tuple_(
+                            ProviderWebhookEvent.provider,
+                            ProviderWebhookEvent.provider_object_id,
+                        ).in_(identity_pairs)
+                    )
+                )
+            )
+        operational_ids = [str(value) for value in discovered_order_ids + discovered_event_ids]
+        if operational_ids:
+            await self.session.scalars(
+                select(BillingJob)
+                .where(BillingJob.object_id.in_(operational_ids))
+                .order_by(BillingJob.id)
+                .with_for_update()
+            )
+        if discovered_event_ids:
+            await self.session.scalars(
+                select(ProviderWebhookEvent)
+                .where(ProviderWebhookEvent.id.in_(discovered_event_ids))
+                .order_by(ProviderWebhookEvent.id)
+                .with_for_update()
+            )
         analyses = list(
             (
                 await self.session.scalars(

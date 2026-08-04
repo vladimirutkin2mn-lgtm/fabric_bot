@@ -98,7 +98,29 @@ class PaymentCompletionService:
         """Apply financial state only while the caller still owns the durable claim."""
         try:
             async with self._sessions.begin() as session:
-                job = await session.get(BillingJob, job_id, with_for_update=True)
+                # Discovery reads are non-authoritative. Mutation locks always use the global
+                # User -> PaymentOrder -> BillingJob -> ProviderWebhookEvent order.
+                discovered_job = await session.get(BillingJob, job_id)
+                initial = await session.get(PaymentOrder, order_id)
+                if discovered_job is None or initial is None:
+                    return "claim_lost"
+                event_id = (
+                    UUID(discovered_job.object_id)
+                    if discovered_job.job_type == "webhook_processing"
+                    else None
+                )
+                user = await session.scalar(
+                    select(User).where(User.id == initial.user_id).with_for_update()
+                )
+                order = await self._lock_order(session, order_id)
+                if order is None:
+                    return "claim_lost"
+                job = await session.scalar(
+                    select(BillingJob)
+                    .where(BillingJob.id == job_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
                 if (
                     job is None
                     or job.claim_id != claim_id
@@ -108,10 +130,8 @@ class PaymentCompletionService:
                 ):
                     return "claim_lost"
                 event: ProviderWebhookEvent | None = None
-                if job.job_type == "webhook_processing":
-                    event = await session.get(
-                        ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
-                    )
+                if event_id is not None:
+                    event = await session.get(ProviderWebhookEvent, event_id, with_for_update=True)
                     if (
                         event is None
                         or event.status == "manual_review"
@@ -121,16 +141,6 @@ class PaymentCompletionService:
                             session, job, event, order_id, "duplicate_payload_mismatch"
                         )
                         return "manual_review"
-                initial = await session.get(PaymentOrder, order_id)
-                if initial is None:
-                    job.status, job.claim_id = "manual_review", None
-                    job.last_error_code = "order_not_found"
-                    return "manual_review"
-                user = await session.scalar(
-                    select(User).where(User.id == initial.user_id).with_for_update()
-                )
-                order = await self._lock_order(session, order_id)
-                assert order is not None
                 if user is None or user.privacy_status != "active":
                     order.status, order.failure_code = "cancelled", "user_deleted"
                     order.encrypted_receipt_contact = None

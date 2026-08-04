@@ -1,14 +1,25 @@
 """Account deletion billing isolation on real PostgreSQL."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import BillingJob, PaymentOrder, ProviderWebhookEvent, User
+from app.db.models import (
+    BillingJob,
+    BillingOutboxEvent,
+    CreditTransaction,
+    PaymentOrder,
+    ProviderWebhookEvent,
+    User,
+)
 from app.providers.analytics import NoOpAnalyticsClient
 from app.services.data_deletion import DataDeletionOutcome, DataDeletionService
+from app.services.payment_completion_service import PaymentCompletionService
+from tests.payment_postgres_helpers import create_claimed_job, create_order, paid
 
 pytestmark = pytest.mark.postgres
 
@@ -74,3 +85,52 @@ async def test_webhook_cleanup_matches_provider_and_object_id(
         assert stripe_job.last_error_code == "user_deleted" and stripe_job.claim_id is None
         assert yookassa_job is not None and yookassa_job.status == "claimed"
         assert yookassa_job.last_error_code is None and yookassa_job.claim_id is not None
+
+
+async def test_payment_completion_and_account_deletion_race_25_times(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    for iteration in range(25):
+        checkout = f"privacy-race-checkout-{iteration}"
+        user_id, order_id = await create_order(payment_db, checkout_id=checkout)
+        job_id, claim_id, _ = await create_claimed_job(payment_db, order_id)
+
+        async def delete(target_user_id: UUID = user_id) -> DataDeletionOutcome:
+            async with payment_db() as session:
+                return await DataDeletionService(session, NoOpAnalyticsClient()).delete_account(
+                    target_user_id
+                )
+
+        completion, deletion = await asyncio.gather(
+            PaymentCompletionService(payment_db).complete_claimed(
+                job_id,
+                claim_id,
+                order_id,
+                paid(order_id, checkout, f"privacy-race-payment-{iteration}"),
+            ),
+            delete(),
+        )
+        assert deletion is DataDeletionOutcome.DELETED
+        assert completion in {"completed", "user_deleted", "claim_lost", "already_cancelled"}
+        async with payment_db() as session:
+            user = await session.get(User, user_id)
+            order = await session.get(PaymentOrder, order_id)
+            job = await session.get(BillingJob, job_id)
+            purchase_count = await session.scalar(
+                select(func.count())
+                .select_from(CreditTransaction)
+                .where(CreditTransaction.payment_order_id == order_id)
+            )
+            outbox_count = await session.scalar(
+                select(func.count())
+                .select_from(BillingOutboxEvent)
+                .where(BillingOutboxEvent.idempotency_key == f"purchase_completed:{order_id}")
+            )
+        assert user is not None and user.privacy_status == "deleted"
+        assert order is not None and order.status in {"completed", "cancelled"}
+        assert job is not None and job.status in {"completed", "manual_review"}
+        assert purchase_count in {0, 1} and outbox_count == purchase_count
+        if completion == "completed":
+            assert purchase_count == 1 and order.status == "completed"
+        else:
+            assert purchase_count == 0

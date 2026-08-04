@@ -32,3 +32,10 @@ same payment. Pre-migration immutable rows keep a null provider and remain valid
 Both commands use bounded batches and `FOR UPDATE SKIP LOCKED`. Keep keys in a secret manager. V1
 supports future format migration, but rotation currently requires controlled re-encryption. Deleted
 content and identity cannot be recovered.
+
+## Transaction lock order
+
+Privacy and billing mutations use one database lock order: `User`, `PaymentOrder`, `BillingJob`,
+`ProviderWebhookEvent`, `Analysis`, `AnalysisPrivateContent`, then outbox/ledger rows. Discovery reads
+are non-authoritative; every claim and privacy state is revalidated after its row is locked. Provider
+network calls remain outside these transactions.
