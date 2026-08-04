@@ -1,7 +1,6 @@
 """ASGI correlation and unexpected-error middleware."""
 
-from collections.abc import Awaitable, Callable, MutableSequence
-from typing import Any
+from collections.abc import MutableSequence
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
