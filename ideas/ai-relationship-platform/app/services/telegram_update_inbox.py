@@ -1,7 +1,5 @@
 """Encrypted durable inbox and lease state machine for Telegram updates."""
 
-import hashlib
-import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -62,20 +60,13 @@ class TelegramUpdateInboxService:
         self._retry_base_seconds = retry_base_seconds
         self._max_attempts = max_attempts
 
-    @staticmethod
-    def payload_hash(payload: dict[str, object]) -> str:
-        canonical = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        return hashlib.sha256(canonical).hexdigest()
-
     async def accept(
         self,
         update_id: int,
         telegram_user_id: int | None,
         payload: dict[str, object],
     ) -> TelegramAcceptResult:
-        digest = self.payload_hash(payload)
+        digest = self._cipher.fingerprint_json(ContentPurpose.TELEGRAM_UPDATE, payload)
         ciphertext = self._cipher.encrypt_json(ContentPurpose.TELEGRAM_UPDATE, payload)
         accepted_at = datetime.now(UTC)
         async with self._sessions.begin() as session:
@@ -100,6 +91,8 @@ class TelegramUpdateInboxService:
             )
             if row is None:
                 raise RuntimeError("Telegram inbox insert was not visible")
+            if row.payload_hash is None:
+                return TelegramAcceptResult(TelegramAcceptOutcome.DUPLICATE, row.status)
             if row.payload_hash != digest:
                 self._terminal(row, "duplicate_payload_mismatch")
                 return TelegramAcceptResult(TelegramAcceptOutcome.PAYLOAD_MISMATCH, row.status)
@@ -226,6 +219,7 @@ class TelegramUpdateInboxService:
         row.status = "failed" if error_code is not None else "completed"
         row.telegram_user_id = None
         row.payload_ciphertext = None
+        row.payload_hash = None
         row.last_error_code = error_code
         row.completed_at = now or datetime.now(UTC)
         cls._clear_claim(row)
