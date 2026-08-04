@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.api.main import create_app
 from app.config import Settings
@@ -52,139 +52,134 @@ async def _seed_metrics(engine: AsyncEngine) -> str:
     sentinel = "private-admin-sentinel"
     now = datetime.now(UTC)
     user_id = uuid4()
-    async with engine.begin() as connection:
-        session_factory = __import__(
-            "sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]
-        ).async_sessionmaker
-        sessions = session_factory(bind=connection, expire_on_commit=False)
-        async with sessions() as session:
-            session.add(
-                User(
-                    id=user_id,
-                    telegram_user_id=991001,
-                    telegram_username=sentinel,
-                    first_name=sentinel,
-                    privacy_status="active",
-                )
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions.begin() as session:
+        session.add(
+            User(
+                id=user_id,
+                telegram_user_id=991001,
+                telegram_username=sentinel,
+                first_name=sentinel,
+                privacy_status="active",
             )
-            session.add_all(
-                [
-                    Analysis(
-                        user_id=user_id,
-                        status="completed",
-                        intake_step="complete",
-                        normalized_conversation_json=[{"text": sentinel}],
-                        message_count=4,
-                        character_count=100,
-                        llm_attempt_count=1,
-                        input_tokens=10,
-                        output_tokens=20,
-                        latency_ms=100,
-                        completed_at=now,
-                        report_access="none",
-                        cost_units=0,
-                    ),
-                    Analysis(
-                        user_id=user_id,
-                        status="completed",
-                        intake_step="complete",
-                        message_count=4,
-                        character_count=100,
-                        llm_attempt_count=1,
-                        input_tokens=30,
-                        output_tokens=40,
-                        latency_ms=300,
-                        completed_at=now,
-                        report_access="none",
-                        cost_units=0,
-                    ),
-                    Analysis(
-                        user_id=user_id,
-                        status="failed",
-                        intake_step="complete",
-                        message_count=4,
-                        character_count=100,
-                        llm_attempt_count=2,
-                        input_tokens=5,
-                        output_tokens=5,
-                        latency_ms=200,
-                        failure_code="llm_timeout",
-                        report_access="none",
-                        cost_units=0,
-                    ),
-                    Analysis(user_id=user_id, status="draft", intake_step="complete"),
-                ]
-            )
-            session.add(
-                CreditTransaction(
+        )
+        session.add_all(
+            [
+                Analysis(
                     user_id=user_id,
-                    type="purchase",
-                    amount=5,
-                    idempotency_key=f"purchase:{uuid4()}",
-                )
+                    status="completed",
+                    intake_step="complete",
+                    normalized_conversation_json=[{"text": sentinel}],
+                    message_count=4,
+                    character_count=100,
+                    llm_attempt_count=1,
+                    input_tokens=10,
+                    output_tokens=20,
+                    latency_ms=100,
+                    completed_at=now,
+                    report_access="none",
+                    cost_units=0,
+                ),
+                Analysis(
+                    user_id=user_id,
+                    status="completed",
+                    intake_step="complete",
+                    message_count=4,
+                    character_count=100,
+                    llm_attempt_count=1,
+                    input_tokens=30,
+                    output_tokens=40,
+                    latency_ms=300,
+                    completed_at=now,
+                    report_access="none",
+                    cost_units=0,
+                ),
+                Analysis(
+                    user_id=user_id,
+                    status="failed",
+                    intake_step="complete",
+                    message_count=4,
+                    character_count=100,
+                    llm_attempt_count=2,
+                    input_tokens=5,
+                    output_tokens=5,
+                    latency_ms=200,
+                    failure_code="llm_timeout",
+                    report_access="none",
+                    cost_units=0,
+                ),
+                Analysis(user_id=user_id, status="draft", intake_step="complete"),
+            ]
+        )
+        session.add(
+            CreditTransaction(
+                user_id=user_id,
+                type="purchase",
+                amount=5,
+                idempotency_key=f"purchase:{uuid4()}",
             )
-            session.add_all(
-                [
-                    AnalyticsEvent(
-                        event_name="bot_started",
-                        subject_id=str(user_id),
-                        properties={},
-                        idempotency_key=f"bot_started:{user_id}",
-                        correlation_id="seed-one",
-                    ),
-                    AnalyticsEvent(
-                        event_name="conversation_rejected",
-                        subject_id=str(user_id),
-                        properties={"rejection_reason": "too_short"},
-                        idempotency_key="conversation_rejected:seed-two",
-                        correlation_id="seed-two",
-                    ),
-                    AnalyticsEvent(
-                        event_name="conversation_rejected",
-                        subject_id=str(user_id),
-                        properties={"rejection_reason": "one_participant"},
-                        idempotency_key="conversation_rejected:seed-three",
-                        correlation_id="seed-three",
-                    ),
-                ]
-            )
-            session.add_all(
-                [
-                    BillingJob(
-                        job_type="payment_reconciliation",
-                        provider="stripe",
-                        object_type="payment_order",
-                        object_id=str(uuid4()),
-                        idempotency_key=f"job:{uuid4()}",
-                        status="pending",
-                    ),
-                    BillingJob(
-                        job_type="payment_reconciliation",
-                        provider="stripe",
-                        object_type="payment_order",
-                        object_id=str(uuid4()),
-                        idempotency_key=f"job:{uuid4()}",
-                        status="manual_review",
-                    ),
-                    BillingOutboxEvent(
-                        aggregate_type="payment_order",
-                        aggregate_id=str(uuid4()),
-                        event_type="purchase_completed",
-                        payload={},
-                        idempotency_key=f"outbox:{uuid4()}",
-                        status="claimed",
-                    ),
-                    BillingOutboxEvent(
-                        aggregate_type="payment_order",
-                        aggregate_id=str(uuid4()),
-                        event_type="payment_failed",
-                        payload={},
-                        idempotency_key=f"outbox:{uuid4()}",
-                        status="manual_review",
-                    ),
-                ]
-            )
-            await session.commit()
+        )
+        session.add_all(
+            [
+                AnalyticsEvent(
+                    event_name="bot_started",
+                    subject_id=str(user_id),
+                    properties={},
+                    idempotency_key=f"bot_started:{user_id}",
+                    correlation_id="seed-one",
+                ),
+                AnalyticsEvent(
+                    event_name="conversation_rejected",
+                    subject_id=str(user_id),
+                    properties={"rejection_reason": "too_short"},
+                    idempotency_key="conversation_rejected:seed-two",
+                    correlation_id="seed-two",
+                ),
+                AnalyticsEvent(
+                    event_name="conversation_rejected",
+                    subject_id=str(user_id),
+                    properties={"rejection_reason": "one_participant"},
+                    idempotency_key="conversation_rejected:seed-three",
+                    correlation_id="seed-three",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                BillingJob(
+                    job_type="payment_reconciliation",
+                    provider="stripe",
+                    object_type="payment_order",
+                    object_id=str(uuid4()),
+                    idempotency_key=f"job:{uuid4()}",
+                    status="pending",
+                ),
+                BillingJob(
+                    job_type="payment_reconciliation",
+                    provider="stripe",
+                    object_type="payment_order",
+                    object_id=str(uuid4()),
+                    idempotency_key=f"job:{uuid4()}",
+                    status="manual_review",
+                ),
+                BillingOutboxEvent(
+                    aggregate_type="payment_order",
+                    aggregate_id=str(uuid4()),
+                    event_type="purchase_completed",
+                    payload={},
+                    idempotency_key=f"outbox:{uuid4()}",
+                    status="claimed",
+                ),
+                BillingOutboxEvent(
+                    aggregate_type="payment_order",
+                    aggregate_id=str(uuid4()),
+                    event_type="payment_failed",
+                    payload={},
+                    idempotency_key=f"outbox:{uuid4()}",
+                    status="manual_review",
+                ),
+            ]
+        )
     return sentinel
 
 
@@ -268,9 +263,7 @@ async def test_invalid_correlation_header_is_replaced(admin_engine: AsyncEngine)
     app = create_app(_settings(url), admin_engine, ObservabilitySettings(app_env="test"))
     private_header = "private correlation with spaces " * 10
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get(
-            "/health/live", headers={"X-Correlation-ID": private_header}
-        )
+        response = await client.get("/health/live", headers={"X-Correlation-ID": private_header})
     generated = response.headers["x-correlation-id"]
     assert response.status_code == 200
     assert len(generated) == 32
