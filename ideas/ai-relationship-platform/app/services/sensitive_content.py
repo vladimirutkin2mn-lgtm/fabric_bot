@@ -18,6 +18,7 @@ class ContentPurpose(StrEnum):
     ANALYSIS_SOURCE = "analysis-source"
     ANALYSIS_RESULT = "analysis-result"
     TELEGRAM_UPDATE = "telegram-update"
+    TELEGRAM_FSM_DATA = "telegram-fsm-data"
 
 
 class SensitiveContentError(ValueError):
