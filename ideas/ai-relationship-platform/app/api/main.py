@@ -70,9 +70,7 @@ def create_app(
         )
         owns_bot = telegram_bot is None
         cipher = AESGCMSensitiveContentCipher(
-            decode_configured_key(
-                resolved_settings.content_encryption_key.get_secret_value()
-            )
+            decode_configured_key(resolved_settings.content_encryption_key.get_secret_value())
         )
         telegram_inbox = TelegramUpdateInboxService(
             sessions,
