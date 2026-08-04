@@ -143,9 +143,9 @@ async def _rolled_back_projection(url: str, schema: str, outbox_id: UUID) -> Non
                 text(
                     "INSERT INTO billing_outbox_events "
                     "(id,aggregate_type,aggregate_id,event_type,payload,idempotency_key,"
-                    "status,attempt_count,available_at,created_at,updated_at) VALUES "
+                    "status,attempt_count,available_at,created_at) VALUES "
                     "(:id,'payment_order',:aggregate_id,'purchase_completed',"
-                    "CAST(:payload AS jsonb),:key,'pending',0,now(),now(),now())"
+                    "CAST(:payload AS jsonb),:key,'pending',0,now(),now())"
                 ),
                 {
                     "id": outbox_id,
@@ -191,12 +191,12 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
                 schema,
                 "INSERT INTO billing_outbox_events "
                 "(id,aggregate_type,aggregate_id,event_type,payload,idempotency_key,status,"
-                "attempt_count,available_at,created_at,updated_at) VALUES "
+                "attempt_count,available_at,created_at) VALUES "
                 f"('{committed_id}','payment_order','{uuid4()}','purchase_completed',"
                 '\'{"product_code":"analysis_single","provider":"stripe",'
                 '"market":"RU","currency":"RUB","credits":"1",'
                 '"private_text":"must-not-project"}\'::jsonb,'
-                f"'purchase-completed:{committed_id}','pending',0,now(),now(),now())",
+                f"'purchase-completed:{committed_id}','pending',0,now(),now())",
             )
         )
         assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM analytics_events")) == 1
