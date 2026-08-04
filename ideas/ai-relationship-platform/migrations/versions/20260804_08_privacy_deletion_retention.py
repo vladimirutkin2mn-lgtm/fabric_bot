@@ -1,0 +1,152 @@
+"""privacy deletion retention
+
+Revision ID: 20260804_08
+Revises: 20260803_07
+"""
+# ruff: noqa: E501
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "20260804_08"
+down_revision: str | None = "20260803_07"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    op.drop_constraint("payment_orders_provider_checkout_id_key", "payment_orders", type_="unique")
+    op.drop_constraint("payment_orders_provider_payment_id_key", "payment_orders", type_="unique")
+    op.drop_constraint("payment_orders_provider_event_id_key", "payment_orders", type_="unique")
+    op.drop_constraint(
+        "credit_transactions_external_payment_id_key", "credit_transactions", type_="unique"
+    )
+    op.add_column(
+        "credit_transactions", sa.Column("external_payment_provider", sa.String(32), nullable=True)
+    )
+    op.create_unique_constraint(
+        "uq_payment_provider_checkout", "payment_orders", ["provider", "provider_checkout_id"]
+    )
+    op.create_unique_constraint(
+        "uq_payment_provider_payment", "payment_orders", ["provider", "provider_payment_id"]
+    )
+    op.create_unique_constraint(
+        "uq_payment_provider_event", "payment_orders", ["provider", "provider_event_id"]
+    )
+    op.create_unique_constraint(
+        "uq_credit_external_payment_provider_id",
+        "credit_transactions",
+        ["external_payment_provider", "external_payment_id"],
+    )
+    op.create_table(
+        "analysis_private_content",
+        sa.Column("analysis_id", sa.Uuid(), nullable=False),
+        sa.Column("source_ciphertext", sa.LargeBinary(), nullable=True),
+        sa.Column("result_ciphertext", sa.LargeBinary(), nullable=True),
+        sa.Column("source_format_version", sa.Integer(), nullable=True),
+        sa.Column("result_format_version", sa.Integer(), nullable=True),
+        sa.Column("source_delete_after", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("source_deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("result_deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.ForeignKeyConstraint(["analysis_id"], ["analyses.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("analysis_id"),
+    )
+    op.create_index(
+        "ix_private_source_delete_after", "analysis_private_content", ["source_delete_after"]
+    )
+    op.add_column(
+        "users", sa.Column("privacy_status", sa.String(16), server_default="active", nullable=False)
+    )
+    op.add_column("users", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
+    op.alter_column("users", "telegram_user_id", existing_type=sa.BigInteger(), nullable=True)
+    op.alter_column("users", "first_name", existing_type=sa.String(255), nullable=True)
+    op.alter_column(
+        "billing_customers", "provider_customer_id", existing_type=sa.String(255), nullable=True
+    )
+    op.create_check_constraint(
+        "ck_users_privacy_identity",
+        "users",
+        "(privacy_status = 'active' AND telegram_user_id IS NOT NULL AND first_name IS NOT NULL AND deleted_at IS NULL) OR "
+        "(privacy_status = 'deleted' AND telegram_user_id IS NULL AND telegram_username IS NULL AND first_name IS NULL AND telegram_language IS NULL AND deleted_at IS NOT NULL)",
+    )
+    op.add_column("analyses", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
+    op.create_index("ix_analyses_deleted_at", "analyses", ["deleted_at"])
+    op.drop_constraint("ck_analyses_terminal_result", "analyses", type_="check")
+    op.create_check_constraint(
+        "ck_analyses_terminal_result",
+        "analyses",
+        "(status <> 'completed' OR completed_at IS NOT NULL) AND "
+        "(status <> 'failed' OR (result_json IS NULL AND failure_code IS NOT NULL AND completed_at IS NULL))",
+    )
+
+
+def downgrade() -> None:
+    bind = op.get_bind()
+    incompatible = bind.scalar(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE privacy_status = 'deleted') OR "
+            "EXISTS (SELECT 1 FROM analysis_private_content "
+            "WHERE source_ciphertext IS NOT NULL OR result_ciphertext IS NOT NULL) OR "
+            "EXISTS (SELECT 1 FROM payment_orders WHERE provider_checkout_id IS NOT NULL "
+            "GROUP BY provider_checkout_id HAVING count(*) > 1) OR "
+            "EXISTS (SELECT 1 FROM payment_orders WHERE provider_payment_id IS NOT NULL "
+            "GROUP BY provider_payment_id HAVING count(*) > 1) OR "
+            "EXISTS (SELECT 1 FROM payment_orders WHERE provider_event_id IS NOT NULL "
+            "GROUP BY provider_event_id HAVING count(*) > 1) OR "
+            "EXISTS (SELECT 1 FROM credit_transactions WHERE external_payment_id IS NOT NULL "
+            "GROUP BY external_payment_id HAVING count(*) > 1)"
+        )
+    )
+    if incompatible:
+        raise RuntimeError(
+            "privacy migration downgrade refused: tombstones or encrypted-only reports exist; "
+            "restore compatible identity/result data through an audited operation first"
+        )
+    op.drop_constraint("uq_payment_provider_payment", "payment_orders", type_="unique")
+    op.drop_constraint("uq_payment_provider_event", "payment_orders", type_="unique")
+    op.drop_constraint(
+        "uq_credit_external_payment_provider_id", "credit_transactions", type_="unique"
+    )
+    op.drop_constraint("uq_payment_provider_checkout", "payment_orders", type_="unique")
+    op.create_unique_constraint(
+        "payment_orders_provider_payment_id_key", "payment_orders", ["provider_payment_id"]
+    )
+    op.create_unique_constraint(
+        "payment_orders_provider_event_id_key", "payment_orders", ["provider_event_id"]
+    )
+    op.create_unique_constraint(
+        "credit_transactions_external_payment_id_key",
+        "credit_transactions",
+        ["external_payment_id"],
+    )
+    op.drop_column("credit_transactions", "external_payment_provider")
+    op.create_unique_constraint(
+        "payment_orders_provider_checkout_id_key", "payment_orders", ["provider_checkout_id"]
+    )
+    op.drop_constraint("ck_analyses_terminal_result", "analyses", type_="check")
+    op.create_check_constraint(
+        "ck_analyses_terminal_result",
+        "analyses",
+        "(status <> 'completed' OR (result_json IS NOT NULL AND completed_at IS NOT NULL)) AND "
+        "(status <> 'failed' OR (result_json IS NULL AND failure_code IS NOT NULL AND completed_at IS NULL))",
+    )
+    op.drop_index("ix_analyses_deleted_at", table_name="analyses")
+    op.drop_column("analyses", "deleted_at")
+    op.drop_constraint("ck_users_privacy_identity", "users", type_="check")
+    op.alter_column("users", "first_name", existing_type=sa.String(255), nullable=False)
+    op.alter_column(
+        "billing_customers", "provider_customer_id", existing_type=sa.String(255), nullable=False
+    )
+    op.alter_column("users", "telegram_user_id", existing_type=sa.BigInteger(), nullable=False)
+    op.drop_column("users", "deleted_at")
+    op.drop_column("users", "privacy_status")
+    op.drop_index("ix_private_source_delete_after", table_name="analysis_private_content")
+    op.drop_table("analysis_private_content")

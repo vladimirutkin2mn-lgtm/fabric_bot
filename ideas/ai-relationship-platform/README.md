@@ -1,5 +1,8 @@
 # HeartSignal — Milestone 2
 
+Privacy architecture, deletion semantics, backfill rollout, and retention scheduling are documented
+in [`docs/privacy-deletion-retention.md`](docs/privacy-deletion-retention.md).
+
 Telegram-first приложение с сохраняемым в PostgreSQL онбордингом: подтверждение 18+,
 версионированное согласие и базовое меню. Незавершённый сценарий восстанавливается из записи
 пользователя после перезапуска, а уникальный Telegram ID и атомарный upsert защищают от дублей.

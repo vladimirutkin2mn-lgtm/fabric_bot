@@ -74,6 +74,7 @@ class PaymentCompletionService:
             owner = await session.scalar(
                 select(PaymentOrder.id).where(
                     PaymentOrder.provider_payment_id == payment_id,
+                    PaymentOrder.provider == order.provider,
                     PaymentOrder.id != order.id,
                 )
             )
@@ -97,7 +98,29 @@ class PaymentCompletionService:
         """Apply financial state only while the caller still owns the durable claim."""
         try:
             async with self._sessions.begin() as session:
-                job = await session.get(BillingJob, job_id, with_for_update=True)
+                # Discovery reads are non-authoritative. Mutation locks always use the global
+                # User -> PaymentOrder -> BillingJob -> ProviderWebhookEvent order.
+                discovered_job = await session.get(BillingJob, job_id)
+                initial = await session.get(PaymentOrder, order_id)
+                if discovered_job is None or initial is None:
+                    return "claim_lost"
+                event_id = (
+                    UUID(discovered_job.object_id)
+                    if discovered_job.job_type == "webhook_processing"
+                    else None
+                )
+                user = await session.scalar(
+                    select(User).where(User.id == initial.user_id).with_for_update()
+                )
+                order = await self._lock_order(session, order_id)
+                if order is None:
+                    return "claim_lost"
+                job = await session.scalar(
+                    select(BillingJob)
+                    .where(BillingJob.id == job_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
                 if (
                     job is None
                     or job.claim_id != claim_id
@@ -107,29 +130,23 @@ class PaymentCompletionService:
                 ):
                     return "claim_lost"
                 event: ProviderWebhookEvent | None = None
-                if job.job_type == "webhook_processing":
-                    event = await session.get(
-                        ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
-                    )
+                if event_id is not None:
+                    event = await session.get(ProviderWebhookEvent, event_id, with_for_update=True)
                     if (
                         event is None
                         or event.status == "manual_review"
                         or event.last_error_code == "duplicate_payload_mismatch"
                     ):
-                        await self._manual_review_locked(
-                            session, job, event, order_id, "duplicate_payload_mismatch"
-                        )
+                        self._manual_review_locked(job, event, order, "duplicate_payload_mismatch")
                         return "manual_review"
-                initial = await session.get(PaymentOrder, order_id)
-                if initial is None:
-                    job.status, job.claim_id = "manual_review", None
-                    job.last_error_code = "order_not_found"
-                    return "manual_review"
-                await session.scalar(
-                    select(User).where(User.id == initial.user_id).with_for_update()
-                )
-                order = await self._lock_order(session, order_id)
-                assert order is not None
+                if user is None or user.privacy_status != "active":
+                    order.status, order.failure_code = "cancelled", "user_deleted"
+                    order.encrypted_receipt_contact = None
+                    job.status, job.last_error_code = "manual_review", "user_deleted"
+                    job.claim_id, job.lease_until = None, None
+                    if event is not None:
+                        event.status, event.last_error_code = "manual_review", "user_deleted"
+                    return "user_deleted"
                 outcome = await self._apply_locked(session, order, payment)
                 manual = self._is_manual_review_outcome(outcome)
                 job_error = order.failure_code
@@ -156,9 +173,15 @@ class PaymentCompletionService:
             initial = await session.get(PaymentOrder, order_id)
             if initial is None:
                 return "order_not_found"
-            await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
+            user = await session.scalar(
+                select(User).where(User.id == initial.user_id).with_for_update()
+            )
             order = await self._lock_order(session, order_id)
             assert order is not None
+            if user is None or user.privacy_status != "active":
+                order.status, order.failure_code = "cancelled", "user_deleted"
+                order.encrypted_receipt_contact = None
+                return "user_deleted"
             return await self._apply_locked(session, order, payment)
 
     async def _apply_locked(
@@ -192,6 +215,7 @@ class PaymentCompletionService:
         owner = await session.scalar(
             select(PaymentOrder.id).where(
                 PaymentOrder.provider_payment_id == payment.payment_id,
+                PaymentOrder.provider == order.provider,
                 PaymentOrder.id != order.id,
             )
         )
@@ -212,24 +236,21 @@ class PaymentCompletionService:
                 payment_order_id=order.id,
                 product_code=order.product_code,
                 external_payment_id=payment.payment_id,
+                external_payment_provider=order.provider,
             )
         )
         await self._outbox(session, order, "purchase_completed")
         return "completed"
 
-    async def _manual_review_locked(
-        self,
-        session: AsyncSession,
+    @staticmethod
+    def _manual_review_locked(
         job: BillingJob,
         event: ProviderWebhookEvent | None,
-        order_id: UUID,
+        order: PaymentOrder,
         code: str,
     ) -> None:
-        initial = await session.get(PaymentOrder, order_id)
-        if initial is not None:
-            await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
-        order = await self._lock_order(session, order_id)
-        if order is not None and order.status in {"creating", "pending"}:
+        """Mutate rows already locked in canonical user/order/job/event order."""
+        if order.status in {"creating", "pending"}:
             order.status, order.failure_code = "manual_review", code
             order.encrypted_receipt_contact = None
         job.status, job.last_error_code, job.claim_id = "manual_review", code, None
@@ -241,26 +262,47 @@ class PaymentCompletionService:
         self, job_id: UUID, claim_id: UUID, order_id: UUID, payment_id: str
     ) -> str:
         async with self._sessions.begin() as session:
-            job = await session.get(BillingJob, job_id, with_for_update=True)
+            discovered_job = await session.get(BillingJob, job_id)
+            initial = await session.get(PaymentOrder, order_id)
+            if discovered_job is None or initial is None:
+                return "claim_lost"
+            event_id = (
+                UUID(discovered_job.object_id)
+                if discovered_job.job_type == "webhook_processing"
+                else None
+            )
+            user = await session.scalar(
+                select(User).where(User.id == initial.user_id).with_for_update()
+            )
+            order = await self._lock_order(session, order_id)
+            if order is None:
+                return "claim_lost"
+            job = await session.scalar(
+                select(BillingJob)
+                .where(BillingJob.id == job_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
             if (
                 job is None
                 or job.claim_id != claim_id
+                or job.status != "claimed"
                 or job.lease_until is None
                 or job.lease_until <= datetime.now(UTC)
             ):
                 return "claim_lost"
-            event = None
-            if job.job_type == "webhook_processing":
-                event = await session.get(
-                    ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
-                )
-            initial = await session.get(PaymentOrder, order_id)
-            if initial is None:
-                job.status, job.claim_id = "manual_review", None
-                return "manual_review"
-            await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
-            order = await self._lock_order(session, order_id)
-            assert order is not None
+            event = (
+                await session.get(ProviderWebhookEvent, event_id, with_for_update=True)
+                if event_id is not None
+                else None
+            )
+            if user is None or user.privacy_status != "active":
+                order.status, order.failure_code = "cancelled", "user_deleted"
+                job.status, job.last_error_code = "manual_review", "user_deleted"
+                if event is not None:
+                    event.status, event.last_error_code = "manual_review", "user_deleted"
+                job.claim_id, job.lease_until = None, None
+                return "user_deleted"
             if order.status == "completed" and order.provider_payment_id == payment_id:
                 outcome = "already_completed"
                 job.status = "completed"
@@ -280,8 +322,8 @@ class PaymentCompletionService:
     @staticmethod
     def _known_identity_constraints() -> set[str]:
         return {
-            "payment_orders_provider_payment_id_key",
-            "credit_transactions_external_payment_id_key",
+            "uq_payment_provider_payment",
+            "uq_credit_external_payment_provider_id",
             "credit_transactions_payment_order_id_key",
             "credit_transactions_idempotency_key_key",
             "billing_outbox_events_idempotency_key_key",

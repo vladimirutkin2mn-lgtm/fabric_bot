@@ -5,6 +5,7 @@ from uuid import UUID
 from app.db.models import Analysis, User
 from app.providers.analytics import AnalyticsClient
 from app.repositories.analyses import AnalysisRepository
+from app.repositories.private_content import AnalysisSource
 from app.services.conversation_parser import (
     ConversationParser,
     ConversationRejected,
@@ -59,8 +60,14 @@ class ConversationIntakeService:
                 {"rejection_reason": error.reason.value},
             )
             raise
-        analysis.normalized_conversation_json = parsed.message_dicts()
-        analysis.participants_json = parsed.participants
+        store = getattr(self._analyses, "store_private_source", None)
+        if store is not None:
+            await store(
+                analysis, AnalysisSource(parsed.message_dicts(), parsed.participants), replace=True
+            )
+        else:
+            analysis.normalized_conversation_json = parsed.message_dicts()
+            analysis.participants_json = parsed.participants
         analysis.message_count, analysis.character_count = (
             parsed.message_count,
             parsed.character_count,
@@ -78,27 +85,44 @@ class ConversationIntakeService:
         return parsed
 
     async def participant(self, analysis: Analysis, label: str) -> None:
-        if analysis.intake_step == "waiting_for_goal" and analysis.user_participant_label == label:
+        source = await self._source(analysis)
+        if analysis.intake_step == "waiting_for_goal" and source.user_participant_label == label:
             return
         if (
             analysis.intake_step != "waiting_for_participant"
-            or not analysis.participants_json
-            or label not in analysis.participants_json
+            or not source.participants
+            or label not in source.participants
         ):
             raise InvalidTransition("Invalid participant selection")
-        analysis.user_participant_label, analysis.intake_step = label, "waiting_for_goal"
+        source = AnalysisSource(
+            source.messages, source.participants, label, source.user_goal, source.relationship_stage
+        )
+        await self._store_source(analysis, source)
+        analysis.intake_step = "waiting_for_goal"
         await self._analyses.save(analysis)
 
     async def goal(self, analysis: Analysis, goal: str) -> None:
+        source = await self._source(analysis)
         clean = goal.strip()
-        if analysis.intake_step == "waiting_for_relationship_stage" and analysis.user_goal == clean:
+        if analysis.intake_step == "waiting_for_relationship_stage" and source.user_goal == clean:
             return
         if analysis.intake_step != "waiting_for_goal" or not clean or len(clean) > self._goal_limit:
             raise InvalidTransition("Invalid goal")
-        analysis.user_goal, analysis.intake_step = clean, "waiting_for_relationship_stage"
+        await self._store_source(
+            analysis,
+            AnalysisSource(
+                source.messages,
+                source.participants,
+                source.user_participant_label,
+                clean,
+                source.relationship_stage,
+            ),
+        )
+        analysis.intake_step = "waiting_for_relationship_stage"
         await self._analyses.save(analysis)
 
     async def relationship_stage(self, analysis: Analysis, code: str) -> Analysis:
+        source = await self._source(analysis)
         allowed = {
             "new_connection",
             "dating",
@@ -107,11 +131,21 @@ class ConversationIntakeService:
             "unclear",
             "not_provided",
         }
-        if analysis.intake_step == "complete" and analysis.relationship_stage == code:
+        if analysis.intake_step == "complete" and source.relationship_stage == code:
             return analysis
         if analysis.intake_step != "waiting_for_relationship_stage" or code not in allowed:
             raise InvalidTransition("Invalid relationship stage")
-        analysis.relationship_stage, analysis.intake_step = code, "complete"
+        await self._store_source(
+            analysis,
+            AnalysisSource(
+                source.messages,
+                source.participants,
+                source.user_participant_label,
+                source.user_goal,
+                code,
+            ),
+        )
+        analysis.intake_step = "complete"
         await self._analyses.save(analysis)
         await self._analytics.track(
             str(analysis.user_id), "analysis_context_completed", {"relationship_stage_code": code}
@@ -135,6 +169,9 @@ class ConversationIntakeService:
             and analysis.normalized_conversation_json is None
         ):
             return
+        clear = getattr(self._analyses, "clear_private_source", None)
+        if clear is not None:
+            await clear(analysis)
         analysis.normalized_conversation_json = None
         analysis.participants_json = None
         analysis.user_participant_label = None
@@ -144,3 +181,28 @@ class ConversationIntakeService:
         analysis.character_count = 0
         analysis.intake_step = "waiting_for_conversation"
         await self._analyses.save(analysis)
+
+    async def _source(self, analysis: Analysis) -> AnalysisSource:
+        loader = getattr(self._analyses, "load_private_source", None)
+        if loader is not None:
+            source = await loader(analysis)
+            if source is not None:
+                return source  # type: ignore[no-any-return]
+        return AnalysisSource(
+            analysis.normalized_conversation_json or [],
+            analysis.participants_json or {},
+            analysis.user_participant_label,
+            analysis.user_goal,
+            analysis.relationship_stage,
+        )
+
+    async def _store_source(self, analysis: Analysis, source: AnalysisSource) -> None:
+        store = getattr(self._analyses, "store_private_source", None)
+        if store is not None:
+            await store(analysis, source)
+        else:
+            analysis.normalized_conversation_json = source.messages
+            analysis.participants_json = source.participants
+            analysis.user_participant_label = source.user_participant_label
+            analysis.user_goal = source.user_goal
+            analysis.relationship_stage = source.relationship_stage

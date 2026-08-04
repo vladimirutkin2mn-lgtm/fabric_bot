@@ -48,6 +48,7 @@ class MemoryUsers:
         return self.users.get(telegram_user_id)
 
     async def save(self, user: User) -> None:
+        assert user.telegram_user_id is not None
         self.users[user.telegram_user_id] = user
 
 

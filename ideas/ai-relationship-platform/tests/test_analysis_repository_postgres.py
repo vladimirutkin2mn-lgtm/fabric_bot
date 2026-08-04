@@ -324,7 +324,6 @@ async def test_real_service_stub_repository_demo_path(
         {"input_tokens": -1},
         {"output_tokens": -1},
         {"latency_ms": -1},
-        {"status": "completed", "result_json": None, "completed_at": datetime.now(UTC)},
         {"status": "failed", "result_json": {"partial": True}, "failure_code": "safe"},
         {"status": "failed", "result_json": JSONB.NULL, "failure_code": "safe"},
         {

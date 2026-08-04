@@ -96,8 +96,9 @@ class BillingJobWorker:
                 checkout_id = event.provider_object_id
                 order = await session.scalar(
                     select(PaymentOrder).where(
+                        PaymentOrder.provider == event.provider,
                         (PaymentOrder.provider_checkout_id == checkout_id)
-                        | (PaymentOrder.provider_payment_id == checkout_id)
+                        | (PaymentOrder.provider_payment_id == checkout_id),
                     )
                 )
             else:
@@ -198,8 +199,9 @@ class BillingJobWorker:
                 order = await session.scalar(
                     select(PaymentOrder)
                     .where(
+                        PaymentOrder.provider == event.provider,
                         (PaymentOrder.provider_checkout_id == event.provider_object_id)
-                        | (PaymentOrder.provider_payment_id == event.provider_object_id)
+                        | (PaymentOrder.provider_payment_id == event.provider_object_id),
                     )
                     .with_for_update()
                 )

@@ -26,6 +26,8 @@ from app.bot.keyboards import (
     payment_market_keyboard,
     paywall_keyboard,
     preview_actions_keyboard,
+    privacy_confirmation_keyboard,
+    privacy_keyboard,
     products_keyboard,
     receipt_contact_keyboard,
     stage_keyboard,
@@ -40,6 +42,7 @@ from app.services.checkout_service import CheckoutRejected, CheckoutService
 from app.services.conversation_intake import ConversationIntakeService, InvalidTransition
 from app.services.conversation_parser import ConversationRejected
 from app.services.credits_service import CreditsService
+from app.services.data_deletion import DataDeletionService
 from app.services.monetized_analysis import MonetizedAnalysisService, MonetizedStatus
 from app.services.onboarding import (
     CURRENT_CONSENT_VERSION,
@@ -445,10 +448,47 @@ async def return_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "menu:privacy")
-async def placeholder(callback: CallbackQuery) -> None:
+async def privacy_screen(callback: CallbackQuery, privacy_retention_days: int) -> None:
     await callback.answer()
     if isinstance(callback.message, Message):
-        await callback.message.answer(texts.COMING_LATER)
+        await callback.message.answer(
+            texts.PRIVACY_INFO.format(days=privacy_retention_days), reply_markup=privacy_keyboard()
+        )
+
+
+@router.callback_query(F.data == "privacy:delete_all")
+async def delete_all_prompt(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            texts.DELETE_ALL_PROMPT, reply_markup=privacy_confirmation_keyboard()
+        )
+
+
+@router.callback_query(F.data.in_({"privacy:cancel", "privacy:menu"}))
+async def delete_all_cancel(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            texts.DELETE_ALL_CANCELLED if callback.data == "privacy:cancel" else texts.MAIN_MENU,
+            reply_markup=main_menu_keyboard(),
+        )
+
+
+@router.callback_query(F.data == "privacy:confirm_all")
+async def delete_all_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
+    onboarding: OnboardingService,
+    data_deletion: DataDeletionService,
+) -> None:
+    user = await onboarding.current_user(callback.from_user.id)
+    if user is not None:
+        await data_deletion.delete_account(user.id)
+    await state.clear()
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.answer(texts.DELETE_ALL_DONE)
 
 
 async def _billing_user(callback: CallbackQuery, onboarding: OnboardingService) -> object | None:

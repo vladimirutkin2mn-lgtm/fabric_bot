@@ -42,9 +42,9 @@ class User(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
     telegram_username: Mapped[str | None] = mapped_column(String(255))
-    first_name: Mapped[str] = mapped_column(String(255))
+    first_name: Mapped[str | None] = mapped_column(String(255))
     telegram_language: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -73,6 +73,10 @@ class User(Base):
         nullable=True,
     )
     free_preview_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    privacy_status: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active"
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Analysis(Base):
@@ -115,7 +119,7 @@ class Analysis(Base):
             name="ck_analyses_llm_metadata",
         ),
         CheckConstraint(
-            "(status <> 'completed' OR (result_json IS NOT NULL AND completed_at IS NOT NULL)) "
+            "(status <> 'completed' OR completed_at IS NOT NULL) "
             "AND (status <> 'failed' OR (result_json IS NULL AND failure_code IS NOT NULL "
             "AND completed_at IS NULL))",
             name="ck_analyses_terminal_result",
@@ -185,6 +189,33 @@ class Analysis(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     user: Mapped[User] = relationship(back_populates="analyses", foreign_keys=[user_id])
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    private_content: Mapped["AnalysisPrivateContent | None"] = relationship(
+        back_populates="analysis", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class AnalysisPrivateContent(Base):
+    """Authenticated ciphertext, separated from operational analysis metadata."""
+
+    __tablename__ = "analysis_private_content"
+    analysis_id: Mapped[UUID] = mapped_column(
+        ForeignKey("analyses.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    result_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    source_format_version: Mapped[int | None] = mapped_column(Integer)
+    result_format_version: Mapped[int | None] = mapped_column(Integer)
+    source_delete_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    source_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    analysis: Mapped[Analysis] = relationship(back_populates="private_content")
 
 
 class PaymentOrder(Base):
@@ -192,6 +223,9 @@ class PaymentOrder(Base):
 
     __tablename__ = "payment_orders"
     __table_args__ = (
+        UniqueConstraint("provider", "provider_checkout_id", name="uq_payment_provider_checkout"),
+        UniqueConstraint("provider", "provider_payment_id", name="uq_payment_provider_payment"),
+        UniqueConstraint("provider", "provider_event_id", name="uq_payment_provider_event"),
         CheckConstraint(
             "status IN ('creating','pending','completed','failed','cancelled','manual_review')",
             name="ck_payment_orders_status",
@@ -231,9 +265,9 @@ class PaymentOrder(Base):
     checkout_started_emitted: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
-    provider_checkout_id: Mapped[str | None] = mapped_column(String(255), unique=True)
-    provider_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
-    provider_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    provider_checkout_id: Mapped[str | None] = mapped_column(String(255))
+    provider_payment_id: Mapped[str | None] = mapped_column(String(255))
+    provider_event_id: Mapped[str | None] = mapped_column(String(255))
     mode: Mapped[str] = mapped_column(String(32), default="one_time", server_default="one_time")
     market: Mapped[str] = mapped_column(String(32), default="RU", server_default="RU")
     product_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
@@ -270,6 +304,11 @@ class CreditTransaction(Base):
 
     __tablename__ = "credit_transactions"
     __table_args__ = (
+        UniqueConstraint(
+            "external_payment_provider",
+            "external_payment_id",
+            name="uq_credit_external_payment_provider_id",
+        ),
         CheckConstraint("amount <> 0", name="ck_credit_transactions_nonzero"),
         CheckConstraint(
             "type IN ('grant','purchase','spend','refund','adjustment','purchase_refund')",
@@ -312,7 +351,8 @@ class CreditTransaction(Base):
         ForeignKey("credit_transactions.id", ondelete="RESTRICT"), unique=True
     )
     product_code: Mapped[str | None] = mapped_column(String(64))
-    external_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    external_payment_id: Mapped[str | None] = mapped_column(String(255))
+    external_payment_provider: Mapped[str | None] = mapped_column(String(32))
     original_purchase_transaction_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("credit_transactions.id", ondelete="RESTRICT")
     )
@@ -337,7 +377,7 @@ class BillingCustomer(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
     provider: Mapped[str] = mapped_column(String(32))
-    provider_customer_id: Mapped[str] = mapped_column(String(255))
+    provider_customer_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
