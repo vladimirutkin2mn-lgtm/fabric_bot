@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
+from app.db.analytics import AnalyticsEvent  # noqa: F401
 from app.db.base import Base
 from app.db.models import User  # noqa: F401
 

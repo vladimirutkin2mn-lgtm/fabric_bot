@@ -53,7 +53,7 @@ class CheckoutResult:
     checkout: Checkout | None = None
 
 
-PaymentTracking = tuple[UUID, int, str]
+PaymentTracking = tuple[UUID, UUID, int, str]
 
 
 class PaymentService:
@@ -173,6 +173,7 @@ class PaymentService:
                 user_id,
                 "checkout_started",
                 {
+                    "order_id": str(request.order_id),
                     "product_code": product.code.value,
                     "provider": self._provider_name,
                     "credits": str(product.credits),
@@ -224,11 +225,12 @@ class PaymentService:
             return PaymentCompletionOutcome.PAYMENT_MISMATCH
 
         if tracking is not None:
-            user_id, credits, product_code = tracking
+            user_id, order_id, credits, product_code = tracking
             await self._track(
                 user_id,
                 "purchase_completed",
                 {
+                    "order_id": str(order_id),
                     "product_code": product_code,
                     "provider": event.provider,
                     "credits": str(credits),
@@ -310,7 +312,7 @@ class PaymentService:
             )
             return (
                 PaymentCompletionOutcome.COMPLETED,
-                (order.user_id, order.credits, order.product_code),
+                (order.user_id, order.id, order.credits, order.product_code),
             )
 
     @staticmethod

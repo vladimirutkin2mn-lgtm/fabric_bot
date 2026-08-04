@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.api.admin import router as admin_router
 from app.api.health import router as health_router
 from app.api.payments import router as payments_router
 from app.api.webhooks import router as webhooks_router
@@ -14,21 +15,36 @@ from app.db.session import create_engine, create_session_factory
 from app.domain.billing import BillingCatalog
 from app.domain.products import ProductCatalog
 from app.logging import configure_logging
-from app.providers.analytics import NoOpAnalyticsClient
+from app.observability.errors import LoggingErrorReporter, NoOpErrorReporter
+from app.observability.http import HttpObservabilityMiddleware
+from app.observability.settings import ObservabilitySettings, get_observability_settings
+from app.providers.analytics_postgres import create_analytics_client
 from app.providers.payments.composition import create_payment_components
+from app.services.admin_metrics import AdminMetricsService
 from app.services.checkout_service import CheckoutService
 from app.services.payment_completion_service import PaymentCompletionService
 from app.services.payment_service import PaymentService
 from app.services.webhook_inbox_service import WebhookInboxService
 
 
-def create_app(settings: Settings | None = None, engine: AsyncEngine | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    engine: AsyncEngine | None = None,
+    observability_settings: ObservabilitySettings | None = None,
+) -> FastAPI:
     """Build an application with injectable configuration and database engine."""
     resolved_settings = settings or get_settings()
+    resolved_observability = observability_settings or get_observability_settings()
     resolved_engine = engine or create_engine(str(resolved_settings.database_url))
     sessions = create_session_factory(resolved_engine)
     catalog = ProductCatalog(resolved_settings)
     payments = create_payment_components(resolved_settings)
+    analytics = create_analytics_client(sessions, resolved_observability)
+    reporter = (
+        LoggingErrorReporter()
+        if resolved_observability.error_reporting_backend == "logging"
+        else NoOpErrorReporter()
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -37,8 +53,13 @@ def create_app(settings: Settings | None = None, engine: AsyncEngine | None = No
         await resolved_engine.dispose()
 
     application = FastAPI(title="HeartSignal API", version="0.1.0", lifespan=lifespan)
+    application.add_middleware(HttpObservabilityMiddleware, reporter=reporter)
     application.state.db_engine = resolved_engine
     application.state.settings = resolved_settings
+    application.state.observability_settings = resolved_observability
+    application.state.analytics = analytics
+    application.state.error_reporter = reporter
+    application.state.admin_metrics_service = AdminMetricsService(sessions)
     application.state.product_catalog = catalog
     application.state.payment_provider = payments.legacy
     application.state.payment_service = (
@@ -46,7 +67,7 @@ def create_app(settings: Settings | None = None, engine: AsyncEngine | None = No
             sessions,
             catalog,
             payments.legacy,
-            NoOpAnalyticsClient(),
+            analytics,
             resolved_settings.payment_provider,
             resolved_settings.checkout_creation_lease_seconds,
         )
@@ -62,6 +83,7 @@ def create_app(settings: Settings | None = None, engine: AsyncEngine | None = No
     )
     application.state.webhook_inbox = WebhookInboxService(sessions)
     application.include_router(health_router)
+    application.include_router(admin_router)
     application.include_router(payments_router)
     application.include_router(webhooks_router)
     return application

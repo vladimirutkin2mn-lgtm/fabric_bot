@@ -3,6 +3,9 @@
 Privacy architecture, deletion semantics, backfill rollout, and retention scheduling are documented
 in [`docs/privacy-deletion-retention.md`](docs/privacy-deletion-retention.md).
 
+Analytics event semantics, correlation IDs, privacy rules and admin metrics are documented in
+[`docs/analytics-admin-observability.md`](docs/analytics-admin-observability.md).
+
 Telegram-first приложение с сохраняемым в PostgreSQL онбордингом: подтверждение 18+,
 версионированное согласие и базовое меню. Незавершённый сценарий восстанавливается из записи
 пользователя после перезапуска, а уникальный Telegram ID и атомарный upsert защищают от дублей.
@@ -233,3 +236,38 @@ Telegram не является основанием для возврата. К�
 подпись или checkout token. Не реализованы реальные платежи, автопродление, provider refunds,
 фоновые workers и stale-job reconciliation (последнее отложено до Milestone 8), новые
 LLM-вызовы для ответов/уточнений, OCR, голос, Grok и OpenRouter.
+
+## Milestone 7: аналитика и административная наблюдаемость
+
+Локальная продуктовая аналитика включается через `ANALYTICS_BACKEND=postgres`. События
+проверяются по строгому allow-list, используют идемпотентные ключи переходов и не содержат
+переписок, отчётов, Telegram identity, receipt contact, checkout URL или секретов провайдера.
+Значение `noop` полностью отключает durable analytics.
+
+HTTP-запросы принимают короткий безопасный `X-Correlation-ID` либо получают случайный
+идентификатор; выбранное значение возвращается в response header. Telegram использует только
+`update_id`, без user/chat identity. Correlation ID добавляется в структурированные логи и
+безопасный error-reporting boundary.
+
+Агрегированные метрики скрыты по умолчанию. Для локальной проверки задайте:
+
+```dotenv
+ANALYTICS_BACKEND=postgres
+ERROR_REPORTING_BACKEND=logging
+ADMIN_METRICS_ENABLED=true
+ADMIN_API_TOKEN=replace-with-local-admin-token
+```
+
+После запуска API:
+
+```bash
+curl --fail \
+  -H 'X-Admin-Token: replace-with-local-admin-token' \
+  -H 'X-Correlation-ID: local-admin-check-1' \
+  http://localhost:8000/admin/metrics
+```
+
+Endpoint возвращает только агрегаты: статусы разборов, completion rate, latency/tokens/cost,
+покупки, воронку, категории validation/technical failures и состояния billing jobs/outbox.
+Полное описание контрактов и privacy-ограничений находится в
+[`docs/analytics-admin-observability.md`](docs/analytics-admin-observability.md).

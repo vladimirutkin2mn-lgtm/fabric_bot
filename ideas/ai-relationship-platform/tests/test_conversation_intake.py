@@ -160,4 +160,10 @@ async def test_ownership_and_analytics_never_expose_secret(
         await service.submit(draft, f"A: {secret}")
     serialized = repr(analytics.events)
     assert secret not in serialized and secret not in caplog.text
-    assert ("conversation_rejected", {"rejection_reason": "one_participant"}) in analytics.events
+    rejection = next(
+        properties for event, properties in analytics.events if event == "conversation_rejected"
+    )
+    assert rejection == {
+        "analysis_id": str(draft.id),
+        "rejection_reason": "one_participant",
+    }

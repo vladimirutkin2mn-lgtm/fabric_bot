@@ -7,13 +7,16 @@ from aiogram import Bot, Dispatcher
 
 from app.bot.dependencies import OnboardingDependencyMiddleware
 from app.bot.handlers import router
+from app.bot.observability import TelegramObservabilityMiddleware
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
 from app.domain.billing import BillingCatalog
 from app.domain.products import ProductCatalog
 from app.logging import configure_logging
-from app.providers.analytics import NoOpAnalyticsClient
+from app.observability.errors import LoggingErrorReporter, NoOpErrorReporter
+from app.observability.settings import ObservabilitySettings, get_observability_settings
+from app.providers.analytics_postgres import create_analytics_client
 from app.providers.llm.base import close_llm_client
 from app.providers.llm.factory import create_llm_client
 from app.providers.payments.composition import create_payment_components
@@ -22,17 +25,26 @@ from app.services.checkout_service import CheckoutService
 logger = logging.getLogger(__name__)
 
 
-def create_dispatcher(settings: Settings) -> Dispatcher:
+def create_dispatcher(
+    settings: Settings, observability_settings: ObservabilitySettings | None = None
+) -> Dispatcher:
     """Create a dispatcher with explicit, per-update dependencies."""
+    resolved_observability = observability_settings or get_observability_settings()
     dispatcher = Dispatcher()
     engine = create_engine(str(settings.database_url))
     llm = create_llm_client(settings)
     payments = create_payment_components(settings)
     sessions = create_session_factory(engine)
     product_catalog = ProductCatalog(settings)
+    analytics = create_analytics_client(sessions, resolved_observability)
+    reporter = (
+        LoggingErrorReporter()
+        if resolved_observability.error_reporting_backend == "logging"
+        else NoOpErrorReporter()
+    )
     dependency_middleware = OnboardingDependencyMiddleware(
         sessions,
-        NoOpAnalyticsClient(),
+        analytics,
         settings,
         llm,
         payments.legacy,
@@ -42,10 +54,13 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)
     dispatcher.callback_query.outer_middleware(rate_middleware)
+    dispatcher.update.outer_middleware(TelegramObservabilityMiddleware(reporter))
     dispatcher.update.outer_middleware(dependency_middleware)
     dispatcher.include_router(router)
     dispatcher["database_engine"] = engine
     dispatcher["llm_client"] = llm
+    dispatcher["analytics"] = analytics
+    dispatcher["error_reporter"] = reporter
     return dispatcher
 
 

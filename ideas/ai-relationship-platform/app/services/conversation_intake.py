@@ -35,7 +35,11 @@ class ConversationIntakeService:
     async def start(self, user: User) -> Analysis:
         analysis, created = await self._analyses.create_or_resume(user.id)
         if created:
-            await self._analytics.track(str(user.id), "analysis_started", {"source_type": "text"})
+            await self._analytics.track(
+                str(user.id),
+                "analysis_started",
+                {"analysis_id": str(analysis.id), "source_type": "text"},
+            )
         return analysis
 
     async def active(self, user_id: UUID) -> Analysis | None:
@@ -57,7 +61,10 @@ class ConversationIntakeService:
             await self._analytics.track(
                 str(analysis.user_id),
                 "conversation_rejected",
-                {"rejection_reason": error.reason.value},
+                {
+                    "analysis_id": str(analysis.id),
+                    "rejection_reason": error.reason.value,
+                },
             )
             raise
         store = getattr(self._analyses, "store_private_source", None)
@@ -75,6 +82,7 @@ class ConversationIntakeService:
         analysis.intake_step = "waiting_for_participant"
         await self._analyses.save(analysis)
         properties = {
+            "analysis_id": str(analysis.id),
             "source_type": "text",
             "source_format": parsed.source_format,
             "message_count_bucket": str(parsed.message_count),
@@ -148,7 +156,9 @@ class ConversationIntakeService:
         analysis.intake_step = "complete"
         await self._analyses.save(analysis)
         await self._analytics.track(
-            str(analysis.user_id), "analysis_context_completed", {"relationship_stage_code": code}
+            str(analysis.user_id),
+            "analysis_context_completed",
+            {"analysis_id": str(analysis.id), "relationship_stage_code": code},
         )
         return analysis
 
@@ -158,7 +168,9 @@ class ConversationIntakeService:
         if analysis.status != "draft" or analysis.intake_step == "complete":
             raise InvalidTransition("Only an unfinished active draft can be cancelled")
         await self._analyses.cancel(analysis)
-        await self._analytics.track(str(analysis.user_id), "analysis_cancelled")
+        await self._analytics.track(
+            str(analysis.user_id), "analysis_cancelled", {"analysis_id": str(analysis.id)}
+        )
 
     async def reset_conversation(self, analysis: Analysis) -> None:
         """Erase submitted context and return an owned unfinished draft to intake start."""
