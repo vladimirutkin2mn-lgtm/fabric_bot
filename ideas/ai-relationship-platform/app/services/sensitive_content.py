@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -55,15 +55,13 @@ class AESGCMSensitiveContentCipher:
         return f"{type(self).__name__}(<redacted>)"
 
     def _key(self, purpose: ContentPurpose) -> bytes:
-        return cast(
-            bytes,
-            HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=b"HeartSignal/content/v1",
-                info=purpose.value.encode(),
-            ).derive(self._root),
-        )
+        derived: bytes = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"HeartSignal/content/v1",
+            info=purpose.value.encode(),
+        ).derive(self._root)
+        return derived
 
     def encrypt_json(self, purpose: ContentPurpose, value: object) -> bytes:
         plaintext = json.dumps(
@@ -71,10 +69,10 @@ class AESGCMSensitiveContentCipher:
         ).encode("utf-8")
         nonce = os.urandom(12)
         header = self._MAGIC + bytes((self._VERSION,))
-        ciphertext = AESGCM(self._key(purpose)).encrypt(
+        ciphertext: bytes = AESGCM(self._key(purpose)).encrypt(
             nonce, plaintext, header + purpose.value.encode()
         )
-        return cast(bytes, header + nonce + ciphertext)
+        return header + nonce + ciphertext
 
     def decrypt_json(self, purpose: ContentPurpose, value: bytes) -> object:
         if not isinstance(value, bytes) or len(value) < 32 or value[:2] != self._MAGIC:

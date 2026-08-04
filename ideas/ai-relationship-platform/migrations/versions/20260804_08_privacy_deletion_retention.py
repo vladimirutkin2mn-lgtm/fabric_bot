@@ -45,6 +45,9 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
     op.alter_column("users", "telegram_user_id", existing_type=sa.BigInteger(), nullable=True)
     op.alter_column("users", "first_name", existing_type=sa.String(255), nullable=True)
+    op.alter_column(
+        "billing_customers", "provider_customer_id", existing_type=sa.String(255), nullable=True
+    )
     op.create_check_constraint(
         "ck_users_privacy_identity",
         "users",
@@ -63,6 +66,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    incompatible = bind.scalar(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE privacy_status = 'deleted') OR "
+            "EXISTS (SELECT 1 FROM analyses a JOIN analysis_private_content p "
+            "ON p.analysis_id = a.id WHERE a.status = 'completed' "
+            "AND a.result_json IS NULL AND p.result_ciphertext IS NOT NULL)"
+        )
+    )
+    if incompatible:
+        raise RuntimeError(
+            "privacy migration downgrade refused: tombstones or encrypted-only reports exist; "
+            "restore compatible identity/result data through an audited operation first"
+        )
     op.drop_constraint("ck_analyses_terminal_result", "analyses", type_="check")
     op.create_check_constraint(
         "ck_analyses_terminal_result",
@@ -73,8 +90,10 @@ def downgrade() -> None:
     op.drop_index("ix_analyses_deleted_at", table_name="analyses")
     op.drop_column("analyses", "deleted_at")
     op.drop_constraint("ck_users_privacy_identity", "users", type_="check")
-    op.execute("DELETE FROM users WHERE privacy_status = 'deleted'")
     op.alter_column("users", "first_name", existing_type=sa.String(255), nullable=False)
+    op.alter_column(
+        "billing_customers", "provider_customer_id", existing_type=sa.String(255), nullable=False
+    )
     op.alter_column("users", "telegram_user_id", existing_type=sa.BigInteger(), nullable=False)
     op.drop_column("users", "deleted_at")
     op.drop_column("users", "privacy_status")

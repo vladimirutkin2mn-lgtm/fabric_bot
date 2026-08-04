@@ -62,7 +62,9 @@ class ConversationIntakeService:
             raise
         store = getattr(self._analyses, "store_private_source", None)
         if store is not None:
-            await store(analysis, AnalysisSource(parsed.message_dicts(), parsed.participants))
+            await store(
+                analysis, AnalysisSource(parsed.message_dicts(), parsed.participants), replace=True
+            )
         else:
             analysis.normalized_conversation_json = parsed.message_dicts()
             analysis.participants_json = parsed.participants
@@ -84,7 +86,7 @@ class ConversationIntakeService:
 
     async def participant(self, analysis: Analysis, label: str) -> None:
         source = await self._source(analysis)
-        if analysis.intake_step == "waiting_for_goal" and analysis.user_participant_label == label:
+        if analysis.intake_step == "waiting_for_goal" and source.user_participant_label == label:
             return
         if (
             analysis.intake_step != "waiting_for_participant"
@@ -102,7 +104,7 @@ class ConversationIntakeService:
     async def goal(self, analysis: Analysis, goal: str) -> None:
         source = await self._source(analysis)
         clean = goal.strip()
-        if analysis.intake_step == "waiting_for_relationship_stage" and analysis.user_goal == clean:
+        if analysis.intake_step == "waiting_for_relationship_stage" and source.user_goal == clean:
             return
         if analysis.intake_step != "waiting_for_goal" or not clean or len(clean) > self._goal_limit:
             raise InvalidTransition("Invalid goal")
@@ -129,7 +131,7 @@ class ConversationIntakeService:
             "unclear",
             "not_provided",
         }
-        if analysis.intake_step == "complete" and analysis.relationship_stage == code:
+        if analysis.intake_step == "complete" and source.relationship_stage == code:
             return analysis
         if analysis.intake_step != "waiting_for_relationship_stage" or code not in allowed:
             raise InvalidTransition("Invalid relationship stage")
@@ -167,6 +169,9 @@ class ConversationIntakeService:
             and analysis.normalized_conversation_json is None
         ):
             return
+        clear = getattr(self._analyses, "clear_private_source", None)
+        if clear is not None:
+            await clear(analysis)
         analysis.normalized_conversation_json = None
         analysis.participants_json = None
         analysis.user_participant_label = None

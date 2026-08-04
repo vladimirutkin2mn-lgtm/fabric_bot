@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update
 from aiogram.types import User as TelegramUser
 
 from app.bot import texts
-from app.bot.handlers import placeholder, router, start
+from app.bot.handlers import privacy_screen, router, start
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
 from app.db.models import Analysis, User
 from app.domain.analysis import AnalysisResult
@@ -129,6 +129,7 @@ class MemoryUsers:
         return self.users.get(telegram_user_id)
 
     async def save(self, user: User) -> None:
+        assert user.telegram_user_id is not None
         self.users[user.telegram_user_id] = user
 
 
@@ -487,7 +488,7 @@ async def test_rate_limit_middleware_applies_to_start_and_callbacks() -> None:
     )
     rate_router = Router()
     rate_router.message.register(start, CommandStart())
-    rate_router.callback_query.register(placeholder, F.data == "menu:history")
+    rate_router.callback_query.register(privacy_screen, F.data == "menu:history")
     limited_dispatcher.include_router(rate_router)
     session = RecordingSession()
     bot = Bot("123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", session=session)
@@ -502,10 +503,10 @@ async def test_rate_limit_middleware_applies_to_start_and_callbacks() -> None:
         bot, start_update(2), onboarding=service, intake=intake, **billing
     )
     await limited_dispatcher.feed_update(
-        bot, callback_update("menu:history", 3), onboarding=service
+        bot, callback_update("menu:history", 3), onboarding=service, privacy_retention_days=30
     )
     await limited_dispatcher.feed_update(
-        bot, callback_update("menu:history", 4), onboarding=service
+        bot, callback_update("menu:history", 4), onboarding=service, privacy_retention_days=30
     )
     assert sent_texts(session).count(texts.RATE_LIMITED) == 1
     alerts = [method for method in session.methods if isinstance(method, AnswerCallbackQuery)]

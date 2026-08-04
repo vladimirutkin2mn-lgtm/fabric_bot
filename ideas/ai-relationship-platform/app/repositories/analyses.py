@@ -95,10 +95,12 @@ class SqlAlchemyAnalysisRepository:
             EncryptedAnalysisContentRepository(session, cipher, retention_days) if cipher else None
         )
 
-    async def store_private_source(self, analysis: Analysis, source: AnalysisSource) -> None:
+    async def store_private_source(
+        self, analysis: Analysis, source: AnalysisSource, *, replace: bool = False
+    ) -> None:
         if self._private is None:
             raise RuntimeError("encrypted content repository is not configured")
-        await self._private.store_source(analysis.id, source)
+        await self._private.store_source(analysis.id, source, replace=replace)
         analysis.normalized_conversation_json = analysis.participants_json = None
         analysis.user_participant_label = analysis.user_goal = analysis.relationship_stage = None
 
@@ -106,6 +108,20 @@ class SqlAlchemyAnalysisRepository:
         if self._private is None:
             return None
         return await self._private.load_source(analysis.id, analysis.user_id)
+
+    async def load_private_result(
+        self, analysis_id: UUID, user_id: UUID
+    ) -> dict[str, object] | None:
+        return (
+            None if self._private is None else await self._private.load_result(analysis_id, user_id)
+        )
+
+    async def clear_private_source(self, analysis: Analysis) -> None:
+        if self._private is None:
+            return
+        row = await self._private._row(analysis.id, create=False)
+        if row is not None:
+            await self._private.clear_source(row)
 
     async def get_active(self, user_id: UUID) -> Analysis | None:
         return cast(
@@ -279,7 +295,9 @@ class SqlAlchemyAnalysisRepository:
         await self._session.refresh(analysis)
 
     async def cancel(self, analysis: Analysis) -> None:
+        await self.clear_private_source(analysis)
         analysis.status = "deleted"
+        analysis.deleted_at = datetime.now(UTC)
         analysis.report_access = "none"
         analysis.normalized_conversation_json = None
         analysis.participants_json = None

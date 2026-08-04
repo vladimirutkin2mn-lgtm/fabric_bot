@@ -7,7 +7,16 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Analysis, AnalysisPrivateContent, PaymentOrder, User
+from app.db.models import (
+    Analysis,
+    AnalysisPrivateContent,
+    BillingCustomer,
+    BillingJob,
+    BillingOutboxEvent,
+    PaymentOrder,
+    Subscription,
+    User,
+)
 from app.providers.analytics import AnalyticsClient
 
 
@@ -98,6 +107,58 @@ class DataDeletionService:
                 checkout_creation_started_at=None,
             )
         )
+        order_ids = list(
+            await self.session.scalars(
+                select(PaymentOrder.id).where(PaymentOrder.user_id == user_id)
+            )
+        )
+        await self.session.execute(
+            update(BillingCustomer)
+            .where(BillingCustomer.user_id == user_id)
+            .values(provider_customer_id=None)
+        )
+        await self.session.execute(
+            update(Subscription)
+            .where(Subscription.user_id == user_id)
+            .values(
+                status="canceled",
+                encrypted_payment_method=None,
+                canceled_at=now,
+                renewal_claimed_by=None,
+                renewal_lease_until=None,
+            )
+        )
+        if order_ids:
+            values = [str(value) for value in order_ids]
+            await self.session.execute(
+                update(BillingJob)
+                .where(
+                    BillingJob.object_id.in_(values),
+                    BillingJob.status.in_(("pending", "claimed")),
+                )
+                .values(
+                    status="manual_review",
+                    last_error_code="user_deleted",
+                    claimed_by=None,
+                    claim_id=None,
+                    lease_until=None,
+                )
+            )
+            await self.session.execute(
+                update(BillingOutboxEvent)
+                .where(
+                    BillingOutboxEvent.aggregate_id.in_(values),
+                    BillingOutboxEvent.status.in_(("pending", "claimed")),
+                )
+                .values(
+                    payload={},
+                    status="manual_review",
+                    last_error_code="user_deleted",
+                    claimed_by=None,
+                    claim_id=None,
+                    lease_until=None,
+                )
+            )
         await self.session.execute(
             update(PaymentOrder)
             .where(PaymentOrder.user_id == user_id)

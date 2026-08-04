@@ -23,36 +23,41 @@ async def cleanup_expired_source(
     now: datetime | None = None,
 ) -> RetentionResult:
     cutoff = now or datetime.now(UTC)
-    rows = list(
+    analyses = list(
         (
             await session.scalars(
-                select(AnalysisPrivateContent)
+                select(Analysis)
+                .join(AnalysisPrivateContent)
                 .where(
                     AnalysisPrivateContent.source_ciphertext.is_not(None),
                     AnalysisPrivateContent.source_delete_after <= cutoff,
                 )
-                .order_by(
-                    AnalysisPrivateContent.source_delete_after, AnalysisPrivateContent.analysis_id
-                )
+                .order_by(AnalysisPrivateContent.source_delete_after, Analysis.id)
                 .limit(batch_size)
-                .with_for_update(skip_locked=True)
+                .with_for_update(of=Analysis, skip_locked=True)
             )
         ).all()
     )
     if dry_run:
         await session.rollback()
-        return RetentionResult(len(rows), 0)
-    for private in rows:
-        analysis = await session.get(Analysis, private.analysis_id, with_for_update=True)
+        return RetentionResult(len(analyses), 0)
+    cleared = 0
+    for analysis in analyses:
+        private = await session.get(AnalysisPrivateContent, analysis.id, with_for_update=True)
+        if (
+            private is None
+            or private.source_ciphertext is None
+            or private.source_delete_after is None
+            or private.source_delete_after > cutoff
+        ):
+            continue
         private.source_ciphertext = None
         private.source_deleted_at = cutoff
-        if analysis:
-            analysis.normalized_conversation_json = analysis.participants_json = None
-            analysis.user_participant_label = analysis.user_goal = analysis.relationship_stage = (
-                None
-            )
-            if analysis.status in {"draft", "queued", "processing"}:
-                analysis.status, analysis.deleted_at = "deleted", cutoff
-                analysis.report_access = "none"
+        analysis.normalized_conversation_json = analysis.participants_json = None
+        analysis.user_participant_label = analysis.user_goal = analysis.relationship_stage = None
+        if analysis.status in {"draft", "queued", "processing"}:
+            analysis.status, analysis.deleted_at = "deleted", cutoff
+            analysis.report_access = "none"
+        cleared += 1
     await session.commit()
-    return RetentionResult(len(rows), len(rows))
+    return RetentionResult(len(analyses), cleared)

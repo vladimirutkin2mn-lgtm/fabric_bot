@@ -107,9 +107,10 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
                 self._analytics,
             )
             data["analysis_price"] = self._settings.analysis_price_credits
-            data["reports"] = ReportService(analyses, ReportRenderer(), self._analytics)
+            deletion = DataDeletionService(session, self._analytics)
+            data["reports"] = ReportService(analyses, ReportRenderer(), self._analytics, deletion)
             data["analysis_repository"] = analyses
             data["analytics"] = self._analytics
-            data["data_deletion"] = DataDeletionService(session, self._analytics)
+            data["data_deletion"] = deletion
             data["privacy_retention_days"] = self._settings.raw_content_retention_days
             return await handler(event, data)

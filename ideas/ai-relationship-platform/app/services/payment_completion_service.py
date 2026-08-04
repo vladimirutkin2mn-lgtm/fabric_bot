@@ -125,11 +125,19 @@ class PaymentCompletionService:
                     job.status, job.claim_id = "manual_review", None
                     job.last_error_code = "order_not_found"
                     return "manual_review"
-                await session.scalar(
+                user = await session.scalar(
                     select(User).where(User.id == initial.user_id).with_for_update()
                 )
                 order = await self._lock_order(session, order_id)
                 assert order is not None
+                if user is None or user.privacy_status != "active":
+                    order.status, order.failure_code = "cancelled", "user_deleted"
+                    order.encrypted_receipt_contact = None
+                    job.status, job.last_error_code = "manual_review", "user_deleted"
+                    job.claim_id, job.lease_until = None, None
+                    if event is not None:
+                        event.status, event.last_error_code = "manual_review", "user_deleted"
+                    return "user_deleted"
                 outcome = await self._apply_locked(session, order, payment)
                 manual = self._is_manual_review_outcome(outcome)
                 job_error = order.failure_code
@@ -156,9 +164,15 @@ class PaymentCompletionService:
             initial = await session.get(PaymentOrder, order_id)
             if initial is None:
                 return "order_not_found"
-            await session.scalar(select(User).where(User.id == initial.user_id).with_for_update())
+            user = await session.scalar(
+                select(User).where(User.id == initial.user_id).with_for_update()
+            )
             order = await self._lock_order(session, order_id)
             assert order is not None
+            if user is None or user.privacy_status != "active":
+                order.status, order.failure_code = "cancelled", "user_deleted"
+                order.encrypted_receipt_contact = None
+                return "user_deleted"
             return await self._apply_locked(session, order, payment)
 
     async def _apply_locked(

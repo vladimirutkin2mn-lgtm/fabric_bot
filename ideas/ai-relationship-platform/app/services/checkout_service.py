@@ -117,11 +117,11 @@ class CheckoutService:
         attempt = uuid4()
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
-            if (
-                await session.scalar(select(User).where(User.id == user_id).with_for_update())
-                is None
-            ):
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
+            if user is None:
                 raise CheckoutRejected("user not found")
+            if user.privacy_status != "active":
+                raise CheckoutRejected("user deleted")
             order = await session.scalar(
                 select(PaymentOrder)
                 .where(
@@ -203,8 +203,19 @@ class CheckoutService:
 
     async def _save(self, order_id: UUID, attempt: UUID, value: HostedCheckout) -> None:
         async with self._sessions.begin() as session:
+            initial = await session.get(PaymentOrder, order_id)
+            if initial is None:
+                return
+            user = await session.scalar(
+                select(User).where(User.id == initial.user_id).with_for_update()
+            )
             order = await session.get(PaymentOrder, order_id, with_for_update=True)
             if not order or order.checkout_creation_attempt_id != attempt:
+                return
+            if user is None or user.privacy_status != "active":
+                order.status, order.failure_code = "cancelled", "user_deleted"
+                order.checkout_url = order.encrypted_receipt_contact = None
+                order.checkout_creation_attempt_id = order.checkout_creation_started_at = None
                 return
             order.provider_checkout_id, order.checkout_url, order.status = (
                 value.checkout_id,

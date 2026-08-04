@@ -28,14 +28,17 @@ class EncryptedAnalysisContentRepository:
         self.session, self.cipher = session, cipher
         self.retention_days = retention_days
 
-    async def store_source(self, analysis_id: UUID, source: AnalysisSource) -> None:
+    async def store_source(
+        self, analysis_id: UUID, source: AnalysisSource, *, replace: bool = False
+    ) -> None:
         row = await self._row(analysis_id, create=True)
         assert row is not None
         row.source_ciphertext = self.cipher.encrypt_json(
             ContentPurpose.ANALYSIS_SOURCE, asdict(source)
         )
         row.source_format_version = 1
-        row.source_delete_after = datetime.now(UTC) + timedelta(days=self.retention_days)
+        if replace or row.source_delete_after is None:
+            row.source_delete_after = datetime.now(UTC) + timedelta(days=self.retention_days)
         row.source_deleted_at = None
         await self.session.flush()
 
@@ -61,13 +64,16 @@ class EncryptedAnalysisContentRepository:
 
     async def store_result(self, analysis_id: UUID, result: dict[str, object]) -> bool:
         analysis = await self.session.scalar(
-            select(Analysis).join(User).where(Analysis.id == analysis_id).with_for_update()
+            select(Analysis)
+            .join(User, User.id == Analysis.user_id)
+            .where(
+                Analysis.id == analysis_id,
+                Analysis.status != "deleted",
+                User.privacy_status == "active",
+            )
+            .with_for_update(of=Analysis)
         )
-        if (
-            analysis is None
-            or analysis.status == "deleted"
-            or analysis.user.privacy_status == "deleted"
-        ):
+        if analysis is None:
             return False
         row = await self._row(analysis_id, create=True)
         assert row is not None

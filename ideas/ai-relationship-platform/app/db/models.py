@@ -119,7 +119,7 @@ class Analysis(Base):
             name="ck_analyses_llm_metadata",
         ),
         CheckConstraint(
-            "(status <> 'completed' OR (result_json IS NOT NULL AND completed_at IS NOT NULL)) "
+            "(status <> 'completed' OR completed_at IS NOT NULL) "
             "AND (status <> 'failed' OR (result_json IS NULL AND failure_code IS NOT NULL "
             "AND completed_at IS NULL))",
             name="ck_analyses_terminal_result",
@@ -368,7 +368,7 @@ class BillingCustomer(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
     provider: Mapped[str] = mapped_column(String(32))
-    provider_customer_id: Mapped[str] = mapped_column(String(255))
+    provider_customer_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
