@@ -100,11 +100,7 @@ class TelegramUpdateInboxService:
             if (
                 row.telegram_user_id is None
                 and telegram_user_id is not None
-                and row.status
-                in {
-                    "pending",
-                    "claimed",
-                }
+                and row.status in {"pending", "claimed"}
             ):
                 row.telegram_user_id = telegram_user_id
             return TelegramAcceptResult(
@@ -126,11 +122,13 @@ class TelegramUpdateInboxService:
         candidate = aliased(TelegramUpdateInbox)
         earlier = aliased(TelegramUpdateInbox)
         earlier_for_user = exists(
-            select(1).where(
+            select(1)
+            .where(
                 earlier.telegram_user_id == candidate.telegram_user_id,
                 earlier.update_id < candidate.update_id,
                 earlier.status.in_(("pending", "claimed")),
             )
+            .correlate(candidate)
         )
         async with self._sessions.begin() as session:
             row = await session.scalar(
