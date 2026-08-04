@@ -57,6 +57,7 @@ async def test_accept_is_idempotent_encrypted_and_completion_erases_payload(
     async with payment_db() as session:
         row = await session.get(TelegramUpdateInbox, 1001)
         assert row is not None and row.status == "pending"
+        assert row.telegram_user_id == 42
         assert row.payload_ciphertext is not None
         assert b"private conversation text" not in row.payload_ciphertext
 
@@ -68,6 +69,7 @@ async def test_accept_is_idempotent_encrypted_and_completion_erases_payload(
     async with payment_db() as session:
         row = await session.get(TelegramUpdateInbox, 1001)
         assert row is not None and row.status == "completed"
+        assert row.telegram_user_id is None
         assert row.payload_ciphertext is None
         assert row.completed_at is not None
 
@@ -83,6 +85,7 @@ async def test_duplicate_update_id_with_different_payload_fails_closed(
     async with payment_db() as session:
         row = await session.get(TelegramUpdateInbox, 1002)
         assert row is not None and row.status == "failed"
+        assert row.telegram_user_id is None
         assert row.payload_ciphertext is None
         assert row.last_error_code == "duplicate_payload_mismatch"
 
@@ -142,5 +145,6 @@ async def test_retry_exhaustion_erases_private_payload(
     async with payment_db() as session:
         row = await session.get(TelegramUpdateInbox, 1030)
         assert row is not None and row.status == "failed"
+        assert row.telegram_user_id is None
         assert row.payload_ciphertext is None
         assert row.last_error_code == "retry_exhausted"
