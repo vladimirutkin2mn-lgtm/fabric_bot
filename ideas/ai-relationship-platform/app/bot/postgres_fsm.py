@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from aiogram.fsm.state import State
 from aiogram.fsm.storage.base import (
@@ -13,8 +13,9 @@ from aiogram.fsm.storage.base import (
     StateType,
     StorageKey,
 )
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.fsm_models import TelegramFSMState
 from app.services.sensitive_content import ContentPurpose, SensitiveContentCipher
@@ -24,15 +25,30 @@ class InvalidFSMDataError(ValueError):
     """Safe error raised when encrypted FSM data is not a JSON object."""
 
 
-def _identity(key: StorageKey) -> dict[str, int | str]:
-    return {
-        "bot_id": key.bot_id,
-        "chat_id": key.chat_id,
-        "user_id": key.user_id,
-        "thread_id": key.thread_id or 0,
-        "business_connection_id": key.business_connection_id or "",
-        "destiny": key.destiny,
-    }
+def _thread_id(key: StorageKey) -> int:
+    return key.thread_id or 0
+
+
+def _business_connection_id(key: StorageKey) -> str:
+    return key.business_connection_id or ""
+
+
+def _new_row(
+    key: StorageKey,
+    *,
+    state: str | None = None,
+    data_ciphertext: bytes | None = None,
+) -> TelegramFSMState:
+    return TelegramFSMState(
+        bot_id=key.bot_id,
+        chat_id=key.chat_id,
+        user_id=key.user_id,
+        thread_id=_thread_id(key),
+        business_connection_id=_business_connection_id(key),
+        destiny=key.destiny,
+        state=state,
+        data_ciphertext=data_ciphertext,
+    )
 
 
 def _lock_id(key: StorageKey, *, domain: bytes) -> int:
@@ -52,15 +68,14 @@ def _lock_id(key: StorageKey, *, domain: bytes) -> int:
     return int.from_bytes(digest, byteorder="big", signed=True)
 
 
-def _matches(key: StorageKey) -> tuple[object, ...]:
-    values = _identity(key)
+def _matches(key: StorageKey) -> tuple[ColumnElement[bool], ...]:
     return (
-        TelegramFSMState.bot_id == values["bot_id"],
-        TelegramFSMState.chat_id == values["chat_id"],
-        TelegramFSMState.user_id == values["user_id"],
-        TelegramFSMState.thread_id == values["thread_id"],
-        TelegramFSMState.business_connection_id == values["business_connection_id"],
-        TelegramFSMState.destiny == values["destiny"],
+        TelegramFSMState.bot_id == key.bot_id,
+        TelegramFSMState.chat_id == key.chat_id,
+        TelegramFSMState.user_id == key.user_id,
+        TelegramFSMState.thread_id == _thread_id(key),
+        TelegramFSMState.business_connection_id == _business_connection_id(key),
+        TelegramFSMState.destiny == key.destiny,
     )
 
 
@@ -100,9 +115,9 @@ class PostgresFSMStorage(BaseStorage):
             ContentPurpose.TELEGRAM_FSM_DATA,
             bytes(row.data_ciphertext),
         )
-        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        if not isinstance(value, dict) or not all(isinstance(item, str) for item in value):
             raise InvalidFSMDataError("FSM data must be a JSON object with string keys")
-        return dict(value)
+        return cast(dict[str, Any], value).copy()
 
     def _encode_data(self, data: Mapping[str, Any]) -> bytes | None:
         copied = dict(data)
@@ -116,9 +131,8 @@ class PostgresFSMStorage(BaseStorage):
             await self._lock_write(session, key)
             row = await self._get_row(session, key, for_update=True)
             if row is None:
-                if normalized is None:
-                    return
-                session.add(TelegramFSMState(**_identity(key), state=normalized))
+                if normalized is not None:
+                    session.add(_new_row(key, state=normalized))
                 return
             row.state = normalized
             if row.state is None and row.data_ciphertext is None:
@@ -135,9 +149,8 @@ class PostgresFSMStorage(BaseStorage):
             await self._lock_write(session, key)
             row = await self._get_row(session, key, for_update=True)
             if row is None:
-                if ciphertext is None:
-                    return
-                session.add(TelegramFSMState(**_identity(key), data_ciphertext=ciphertext))
+                if ciphertext is not None:
+                    session.add(_new_row(key, data_ciphertext=ciphertext))
                 return
             row.data_ciphertext = ciphertext
             if row.state is None and row.data_ciphertext is None:
@@ -160,7 +173,7 @@ class PostgresFSMStorage(BaseStorage):
             ciphertext = self._encode_data(merged)
             if row is None:
                 if ciphertext is not None:
-                    session.add(TelegramFSMState(**_identity(key), data_ciphertext=ciphertext))
+                    session.add(_new_row(key, data_ciphertext=ciphertext))
             else:
                 row.data_ciphertext = ciphertext
                 if row.state is None and row.data_ciphertext is None:
@@ -169,17 +182,6 @@ class PostgresFSMStorage(BaseStorage):
 
     async def close(self) -> None:
         """The application owns the shared SQLAlchemy engine lifecycle."""
-
-    async def delete_user(self, telegram_user_id: int) -> int:
-        """Explicit operational cleanup; the database trigger remains the hard boundary."""
-        async with self._sessions.begin() as session:
-            result = await session.execute(
-                delete(TelegramFSMState).where(
-                    (TelegramFSMState.user_id == telegram_user_id)
-                    | (TelegramFSMState.chat_id == telegram_user_id)
-                )
-            )
-            return result.rowcount
 
 
 class PostgresEventIsolation(BaseEventIsolation):
