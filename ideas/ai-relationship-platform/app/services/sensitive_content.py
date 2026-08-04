@@ -39,6 +39,9 @@ class ContentAuthenticationError(SensitiveContentError):
 class SensitiveContentCipher(Protocol):
     def encrypt_json(self, purpose: ContentPurpose, value: object) -> bytes: ...
     def decrypt_json(self, purpose: ContentPurpose, value: bytes) -> object: ...
+
+
+class FingerprintingSensitiveContentCipher(SensitiveContentCipher, Protocol):
     def fingerprint_json(self, purpose: ContentPurpose, value: object) -> str: ...
 
 
