@@ -70,9 +70,8 @@ def downgrade() -> None:
     incompatible = bind.scalar(
         sa.text(
             "SELECT EXISTS (SELECT 1 FROM users WHERE privacy_status = 'deleted') OR "
-            "EXISTS (SELECT 1 FROM analyses a JOIN analysis_private_content p "
-            "ON p.analysis_id = a.id WHERE a.status = 'completed' "
-            "AND a.result_json IS NULL AND p.result_ciphertext IS NOT NULL)"
+            "EXISTS (SELECT 1 FROM analysis_private_content "
+            "WHERE source_ciphertext IS NOT NULL OR result_ciphertext IS NOT NULL)"
         )
     )
     if incompatible:

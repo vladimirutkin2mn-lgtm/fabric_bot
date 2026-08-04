@@ -45,8 +45,8 @@ class EncryptedAnalysisContentRepository:
     async def load_source(self, analysis_id: UUID, user_id: UUID) -> AnalysisSource | None:
         statement = (
             select(AnalysisPrivateContent)
-            .join(Analysis)
-            .join(User)
+            .join(Analysis, Analysis.id == AnalysisPrivateContent.analysis_id)
+            .join(User, User.id == Analysis.user_id)
             .where(
                 Analysis.id == analysis_id,
                 Analysis.user_id == user_id,
@@ -85,8 +85,8 @@ class EncryptedAnalysisContentRepository:
     async def load_result(self, analysis_id: UUID, user_id: UUID) -> dict[str, object] | None:
         row = await self.session.scalar(
             select(AnalysisPrivateContent)
-            .join(Analysis)
-            .join(User)
+            .join(Analysis, Analysis.id == AnalysisPrivateContent.analysis_id)
+            .join(User, User.id == Analysis.user_id)
             .where(
                 Analysis.id == analysis_id,
                 Analysis.user_id == user_id,

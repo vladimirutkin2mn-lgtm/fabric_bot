@@ -4,8 +4,10 @@ import argparse
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -27,7 +29,8 @@ async def backfill_batch(
     batch_size: int = 100,
     dry_run: bool = False,
     retention_days: int = 30,
-) -> tuple[int, int]:
+    after_id: UUID | None = None,
+) -> tuple[int, int, UUID | None]:
     # Kept as a command-level function so operations can test and orchestrate bounded batches.
     rows = list(
         (
@@ -41,7 +44,8 @@ async def backfill_batch(
                         Analysis.user_goal.is_not(None),
                         Analysis.relationship_stage.is_not(None),
                         Analysis.result_json.is_not(None),
-                    )
+                    ),
+                    Analysis.id > after_id if after_id is not None else True,
                 )
                 .order_by(Analysis.id)
                 .limit(batch_size)
@@ -51,7 +55,11 @@ async def backfill_batch(
     )
     conflicts = 0
     for analysis in rows:
-        private = await session.get(AnalysisPrivateContent, analysis.id)
+        private = await session.scalar(
+            select(AnalysisPrivateContent)
+            .where(AnalysisPrivateContent.analysis_id == analysis.id)
+            .with_for_update()
+        )
         has_source = any(
             (
                 analysis.normalized_conversation_json,
@@ -70,8 +78,18 @@ async def backfill_batch(
         if dry_run:
             continue
         if private is None:
-            private = AnalysisPrivateContent(analysis_id=analysis.id)
-            session.add(private)
+            await session.execute(
+                insert(AnalysisPrivateContent)
+                .values(analysis_id=analysis.id)
+                .on_conflict_do_nothing(index_elements=[AnalysisPrivateContent.analysis_id])
+            )
+            private = await session.scalar(
+                select(AnalysisPrivateContent)
+                .where(AnalysisPrivateContent.analysis_id == analysis.id)
+                .with_for_update()
+            )
+            if private is None:
+                raise RuntimeError("private content row could not be locked")
         if has_source:
             private.source_ciphertext = cipher.encrypt_json(
                 ContentPurpose.ANALYSIS_SOURCE,
@@ -97,7 +115,7 @@ async def backfill_batch(
         await session.rollback()
     else:
         await session.commit()
-    return len(rows), conflicts
+    return len(rows), conflicts, rows[-1].id if rows else after_id
 
 
 async def main() -> int:
@@ -112,18 +130,20 @@ async def main() -> int:
         decode_configured_key(settings.content_encryption_key.get_secret_value())
     )
     total = conflicts = 0
+    last_seen: UUID | None = None
     async with sessions() as session:
         while True:
-            count, found = await backfill_batch(
+            count, found, last_seen = await backfill_batch(
                 session,
                 cipher,
                 batch_size=args.batch_size,
                 dry_run=args.dry_run,
                 retention_days=settings.raw_content_retention_days,
+                after_id=last_seen,
             )
             total += count
             conflicts += found
-            if args.dry_run or count < args.batch_size or found == count:
+            if count < args.batch_size:
                 break
     logger.info(
         "private_content_backfill examined=%s conflicts=%s at=%s",
