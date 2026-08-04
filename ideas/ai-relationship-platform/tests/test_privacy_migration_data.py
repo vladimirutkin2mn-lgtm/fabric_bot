@@ -10,6 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
+_PRIVACY_PARENT = "20260803_07"
+_PRIVACY_REVISION = "20260804_08"
 
 
 async def _execute(url: str, schema: str, statement: str) -> None:
@@ -42,16 +44,54 @@ def _environment(url: str, schema: str) -> dict[str, str]:
     }
 
 
-def test_clean_privacy_migration_upgrade_downgrade_upgrade() -> None:
+def _database_url() -> str:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
-    schema = f"privacy_migration_clean_{uuid4().hex}"
+    return url
+
+
+def _create_schema(url: str, prefix: str) -> str:
+    schema = f"{prefix}_{uuid4().hex}"
     asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
+    return schema
+
+
+def _upgrade_head(environment: dict[str, str]) -> None:
+    subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+
+
+def _privacy_downgrade(environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ("alembic", "downgrade", _PRIVACY_PARENT),
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_privacy_refused(
+    url: str,
+    schema: str,
+    failed: subprocess.CompletedProcess[str],
+) -> None:
+    assert failed.returncode != 0
+    assert "downgrade refused" in failed.stderr
+    assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
+        _PRIVACY_REVISION
+    )
+
+
+def test_clean_privacy_migration_upgrade_downgrade_upgrade() -> None:
+    url = _database_url()
+    schema = _create_schema(url, "privacy_migration_clean")
     environment = _environment(url, schema)
     try:
-        for arguments in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head")):
-            subprocess.run(("alembic", *arguments), check=True, env=environment)
+        _upgrade_head(environment)
+        subprocess.run(
+            ("alembic", "downgrade", _PRIVACY_PARENT), check=True, env=environment
+        )
+        _upgrade_head(environment)
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
@@ -60,15 +100,12 @@ def test_clean_privacy_migration_upgrade_downgrade_upgrade() -> None:
 def test_encrypted_content_refuses_downgrade_before_destructive_ddl(
     ciphertext_column: str,
 ) -> None:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
-    schema = f"privacy_migration_{uuid4().hex}"
+    url = _database_url()
+    schema = _create_schema(url, "privacy_migration")
     user_id, analysis_id = uuid4(), uuid4()
-    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
     environment = _environment(url, schema)
     try:
-        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        _upgrade_head(environment)
         asyncio.run(
             _execute(
                 url,
@@ -95,11 +132,8 @@ def test_encrypted_content_refuses_downgrade_before_destructive_ddl(
                 f"VALUES ('{analysis_id}',decode('010203','hex'))",
             )
         )
-        failed = subprocess.run(
-            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
-        )
-        assert failed.returncode != 0
-        assert "downgrade refused" in failed.stderr
+        failed = _privacy_downgrade(environment)
+        _assert_privacy_refused(url, schema, failed)
         assert (
             asyncio.run(
                 _scalar(
@@ -111,24 +145,18 @@ def test_encrypted_content_refuses_downgrade_before_destructive_ddl(
             )
             == "010203"
         )
-        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-            "20260804_08"
-        )
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
 
 @pytest.mark.parametrize("reference", ["none", "ledger", "order"])
 def test_tombstone_and_financial_references_refuse_downgrade(reference: str) -> None:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
-    schema = f"privacy_tombstone_{uuid4().hex}"
+    url = _database_url()
+    schema = _create_schema(url, "privacy_tombstone")
     user_id, reference_id = uuid4(), uuid4()
-    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
     environment = _environment(url, schema)
     try:
-        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        _upgrade_head(environment)
         asyncio.run(
             _execute(
                 url,
@@ -169,13 +197,8 @@ def test_tombstone_and_financial_references_refuse_downgrade(reference: str) -> 
                 f"WHERE id='{user_id}'",
             )
         )
-        failed = subprocess.run(
-            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
-        )
-        assert failed.returncode != 0 and "downgrade refused" in failed.stderr
-        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-            "20260804_08"
-        )
+        failed = _privacy_downgrade(environment)
+        _assert_privacy_refused(url, schema, failed)
         assert (
             asyncio.run(
                 _scalar(url, schema, f"SELECT privacy_status FROM users WHERE id='{user_id}'")
@@ -201,15 +224,12 @@ def test_tombstone_and_financial_references_refuse_downgrade(reference: str) -> 
 def test_cross_provider_order_identity_refuses_legacy_unique_downgrade(
     identity_column: str,
 ) -> None:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
-    schema = f"privacy_identity_{uuid4().hex}"
+    url = _database_url()
+    schema = _create_schema(url, "privacy_identity")
     user_ids, order_ids = (uuid4(), uuid4()), (uuid4(), uuid4())
-    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
     environment = _environment(url, schema)
     try:
-        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        _upgrade_head(environment)
         for index, provider in enumerate(("stripe", "yookassa")):
             asyncio.run(
                 _execute(
@@ -231,27 +251,19 @@ def test_cross_provider_order_identity_refuses_legacy_unique_downgrade(
                     "'one_time','INTERNATIONAL',1,'{}','shared-identity')",
                 )
             )
-        failed = subprocess.run(
-            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
-        )
-        assert failed.returncode != 0 and "downgrade refused" in failed.stderr
+        failed = _privacy_downgrade(environment)
+        _assert_privacy_refused(url, schema, failed)
         assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM payment_orders")) == 2
-        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-            "20260804_08"
-        )
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
 
 def test_cross_provider_ledger_identity_refuses_legacy_unique_downgrade() -> None:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
-    schema = f"privacy_ledger_identity_{uuid4().hex}"
-    asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
+    url = _database_url()
+    schema = _create_schema(url, "privacy_ledger_identity")
     environment = _environment(url, schema)
     try:
-        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        _upgrade_head(environment)
         for index, provider in enumerate(("stripe", "yookassa")):
             user_id, transaction_id = uuid4(), uuid4()
             asyncio.run(
@@ -272,13 +284,8 @@ def test_cross_provider_ledger_identity_refuses_legacy_unique_downgrade() -> Non
                     f"'migration-ledger-{transaction_id}','{provider}','shared-ledger-id')",
                 )
             )
-        failed = subprocess.run(
-            ("alembic", "downgrade", "-1"), env=environment, capture_output=True, text=True
-        )
-        assert failed.returncode != 0 and "downgrade refused" in failed.stderr
+        failed = _privacy_downgrade(environment)
+        _assert_privacy_refused(url, schema, failed)
         assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM credit_transactions")) == 2
-        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-            "20260804_08"
-        )
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
