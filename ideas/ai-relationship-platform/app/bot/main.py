@@ -1,4 +1,4 @@
-"""aiogram bootstrap for polling locally and webhook registration in deployment."""
+"""aiogram bootstrap for local long-polling and shared dispatcher construction."""
 
 import asyncio
 import logging
@@ -88,19 +88,16 @@ async def configure_webhook(bot: Bot, settings: Settings) -> None:
 
 
 async def run(settings: Settings | None = None) -> None:
-    """Run polling locally or register webhook-ready configuration."""
+    """Run local polling; production webhook updates belong to the durable worker."""
     resolved_settings = settings or get_settings()
+    if resolved_settings.webhook_enabled:
+        raise ValueError("webhook mode requires app.workers.telegram")
     configure_logging(resolved_settings.log_level)
     bot = Bot(token=resolved_settings.telegram_bot_token.get_secret_value())
     dispatcher = create_dispatcher(resolved_settings)
     try:
-        if resolved_settings.webhook_enabled:
-            await configure_webhook(bot, resolved_settings)
-            logger.info("Telegram webhook configured; waiting for API webhook transport")
-            await asyncio.Event().wait()
-        else:
-            await bot.delete_webhook(drop_pending_updates=False)
-            await dispatcher.start_polling(bot)
+        await bot.delete_webhook(drop_pending_updates=False)
+        await dispatcher.start_polling(bot)
     finally:
         try:
             await close_dispatcher(dispatcher)

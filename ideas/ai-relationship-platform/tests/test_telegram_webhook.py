@@ -1,29 +1,35 @@
-"""Authenticated Telegram webhook transport acceptance tests."""
+"""Authenticated Telegram webhook ingress acceptance tests."""
 
-from typing import cast
-
-from aiogram import Bot, Dispatcher
-from aiogram.types import Update
+from aiogram import Bot
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
 from app.api.telegram import router
 from app.config import Settings
+from app.services.telegram_update_inbox import (
+    TelegramAcceptOutcome,
+    TelegramAcceptResult,
+)
 
 
-class RecordingDispatcher:
+class RecordingInbox:
     def __init__(self) -> None:
-        self.updates: list[Update] = []
+        self.accepted: list[tuple[int, int | None, dict[str, object]]] = []
 
-    async def feed_update(self, bot: Bot, update: Update) -> None:
-        assert update.bot is bot
-        self.updates.append(update)
+    async def accept(
+        self,
+        update_id: int,
+        telegram_user_id: int | None,
+        payload: dict[str, object],
+    ) -> TelegramAcceptResult:
+        self.accepted.append((update_id, telegram_user_id, payload))
+        return TelegramAcceptResult(TelegramAcceptOutcome.ACCEPTED, "pending")
 
 
 def webhook_app(
     settings: Settings,
-    dispatcher: RecordingDispatcher,
+    inbox: RecordingInbox,
     bot: Bot,
     *,
     max_bytes: int = 4096,
@@ -32,7 +38,7 @@ def webhook_app(
     app.state.settings = settings
     app.state.telegram_webhook_max_bytes = max_bytes
     app.state.telegram_bot = bot
-    app.state.telegram_dispatcher = cast(Dispatcher, dispatcher)
+    app.state.telegram_update_inbox = inbox
     app.include_router(router)
     return app
 
@@ -50,17 +56,17 @@ def update_payload(update_id: int = 101) -> dict[str, object]:
     }
 
 
-async def test_valid_webhook_feeds_one_update(settings: Settings) -> None:
+async def test_valid_webhook_enqueues_without_running_dispatcher(settings: Settings) -> None:
     configured = settings.model_copy(
         update={
             "telegram_webhook_url": "https://example.com/telegram/webhook",
             "telegram_webhook_secret": SecretStr("safe-webhook-secret"),
         }
     )
-    dispatcher = RecordingDispatcher()
+    inbox = RecordingInbox()
     bot = Bot(token=configured.telegram_bot_token.get_secret_value())
     try:
-        app = webhook_app(configured, dispatcher, bot)
+        app = webhook_app(configured, inbox, bot)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
                 "/telegram/webhook",
@@ -68,22 +74,26 @@ async def test_valid_webhook_feeds_one_update(settings: Settings) -> None:
                 json=update_payload(),
             )
         assert response.status_code == 204
-        assert [update.update_id for update in dispatcher.updates] == [101]
+        assert len(inbox.accepted) == 1
+        update_id, telegram_user_id, payload = inbox.accepted[0]
+        assert update_id == 101
+        assert telegram_user_id == 42
+        assert payload["update_id"] == 101
     finally:
         await bot.session.close()
 
 
-async def test_webhook_rejects_wrong_secret_before_dispatch(settings: Settings) -> None:
+async def test_webhook_rejects_wrong_secret_before_enqueue(settings: Settings) -> None:
     configured = settings.model_copy(
         update={
             "telegram_webhook_url": "https://example.com/telegram/webhook",
             "telegram_webhook_secret": SecretStr("expected-secret"),
         }
     )
-    dispatcher = RecordingDispatcher()
+    inbox = RecordingInbox()
     bot = Bot(token=configured.telegram_bot_token.get_secret_value())
     try:
-        app = webhook_app(configured, dispatcher, bot)
+        app = webhook_app(configured, inbox, bot)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
                 "/telegram/webhook",
@@ -91,20 +101,20 @@ async def test_webhook_rejects_wrong_secret_before_dispatch(settings: Settings) 
                 json=update_payload(),
             )
         assert response.status_code == 401
-        assert dispatcher.updates == []
+        assert inbox.accepted == []
     finally:
         await bot.session.close()
 
 
 async def test_webhook_is_hidden_when_disabled(settings: Settings) -> None:
-    dispatcher = RecordingDispatcher()
+    inbox = RecordingInbox()
     bot = Bot(token=settings.telegram_bot_token.get_secret_value())
     try:
-        app = webhook_app(settings, dispatcher, bot)
+        app = webhook_app(settings, inbox, bot)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/telegram/webhook", json=update_payload())
         assert response.status_code == 404
-        assert dispatcher.updates == []
+        assert inbox.accepted == []
     finally:
         await bot.session.close()
 
@@ -116,11 +126,11 @@ async def test_webhook_rejects_oversized_and_invalid_updates(settings: Settings)
             "telegram_webhook_secret": SecretStr("safe-webhook-secret"),
         }
     )
-    dispatcher = RecordingDispatcher()
+    inbox = RecordingInbox()
     bot = Bot(token=configured.telegram_bot_token.get_secret_value())
     headers = {"X-Telegram-Bot-Api-Secret-Token": "safe-webhook-secret"}
     try:
-        app = webhook_app(configured, dispatcher, bot, max_bytes=64)
+        app = webhook_app(configured, inbox, bot, max_bytes=64)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             oversized = await client.post("/telegram/webhook", headers=headers, content=b"x" * 65)
             invalid = await client.post(
@@ -130,6 +140,6 @@ async def test_webhook_rejects_oversized_and_invalid_updates(settings: Settings)
             )
         assert oversized.status_code == 413
         assert invalid.status_code == 400
-        assert dispatcher.updates == []
+        assert inbox.accepted == []
     finally:
         await bot.session.close()

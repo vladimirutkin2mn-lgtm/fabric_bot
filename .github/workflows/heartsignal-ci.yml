@@ -2,7 +2,13 @@ name: HeartSignal CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: heartsignal-ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -61,7 +67,16 @@ jobs:
           alembic upgrade head
 
       - name: Test
-        run: pytest
+        run: pytest --junitxml=pytest-report.xml
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heartsignal-pytest-report
+          path: ideas/ai-relationship-platform/pytest-report.xml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Prepare Compose environment
         run: cp .env.example .env

@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 from enum import StrEnum
@@ -16,6 +17,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 class ContentPurpose(StrEnum):
     ANALYSIS_SOURCE = "analysis-source"
     ANALYSIS_RESULT = "analysis-result"
+    TELEGRAM_UPDATE = "telegram-update"
 
 
 class SensitiveContentError(ValueError):
@@ -39,6 +41,10 @@ class SensitiveContentCipher(Protocol):
     def decrypt_json(self, purpose: ContentPurpose, value: bytes) -> object: ...
 
 
+class FingerprintingSensitiveContentCipher(SensitiveContentCipher, Protocol):
+    def fingerprint_json(self, purpose: ContentPurpose, value: object) -> str: ...
+
+
 class AESGCMSensitiveContentCipher:
     """AES-256-GCM with HKDF purpose separation and random 96-bit nonces."""
 
@@ -54,6 +60,12 @@ class AESGCMSensitiveContentCipher:
     def __repr__(self) -> str:
         return f"{type(self).__name__}(<redacted>)"
 
+    @staticmethod
+    def _canonical_json(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+
     def _key(self, purpose: ContentPurpose) -> bytes:
         derived: bytes = HKDF(
             algorithm=hashes.SHA256(),
@@ -63,10 +75,17 @@ class AESGCMSensitiveContentCipher:
         ).derive(self._root)
         return derived
 
+    def _fingerprint_key(self, purpose: ContentPurpose) -> bytes:
+        derived: bytes = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"HeartSignal/fingerprint/v1",
+            info=purpose.value.encode(),
+        ).derive(self._root)
+        return derived
+
     def encrypt_json(self, purpose: ContentPurpose, value: object) -> bytes:
-        plaintext = json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        plaintext = self._canonical_json(value)
         nonce = os.urandom(12)
         header = self._MAGIC + bytes((self._VERSION,))
         ciphertext: bytes = AESGCM(self._key(purpose)).encrypt(
@@ -87,6 +106,14 @@ class AESGCMSensitiveContentCipher:
             return json.loads(plaintext)
         except (InvalidTag, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ContentAuthenticationError("sensitive content authentication failed") from exc
+
+    def fingerprint_json(self, purpose: ContentPurpose, value: object) -> str:
+        """Return a deterministic keyed digest safe from offline plaintext guessing."""
+        return hmac.new(
+            self._fingerprint_key(purpose),
+            self._canonical_json(value),
+            hashlib.sha256,
+        ).hexdigest()
 
 
 def decode_configured_key(value: str) -> bytes:

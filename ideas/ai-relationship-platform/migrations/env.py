@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.db.analytics import AnalyticsEvent  # noqa: F401
 from app.db.base import Base
 from app.db.models import User  # noqa: F401
+from app.db.telegram_models import TelegramUpdateInbox  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
