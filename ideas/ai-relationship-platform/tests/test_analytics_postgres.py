@@ -4,7 +4,7 @@ import asyncio
 import os
 import subprocess
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select, text
@@ -133,6 +133,34 @@ async def _scalar(url: str, schema: str, statement: str) -> object | None:
         await engine.dispose()
 
 
+async def _rolled_back_projection(url: str, schema: str, outbox_id: UUID) -> None:
+    engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
+    try:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            await connection.execute(
+                text(
+                    "INSERT INTO billing_outbox_events "
+                    "(id,aggregate_type,aggregate_id,event_type,payload,idempotency_key,"
+                    "status,attempt_count,available_at,created_at,updated_at) VALUES "
+                    "(:id,'payment_order',:aggregate_id,'purchase_completed',"
+                    "CAST(:payload AS jsonb),:key,'pending',0,now(),now(),now())"
+                ),
+                {
+                    "id": outbox_id,
+                    "aggregate_id": str(uuid4()),
+                    "payload": '{"product_code":"analysis_single","provider":"stripe",'
+                    '"market":"RU","currency":"RUB","credits":"1",'
+                    '"private_text":"must-not-project"}',
+                    "key": f"purchase-completed:{outbox_id}",
+                },
+            )
+            assert await connection.scalar(text("SELECT count(*) FROM analytics_events")) == 1
+            await transaction.rollback()
+    finally:
+        await engine.dispose()
+
+
 def _environment(url: str, schema: str) -> dict[str, str]:
     return {
         **os.environ,
@@ -154,32 +182,7 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
     environment = _environment(url, schema)
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
-
-        async def rolled_back_insert() -> None:
-            async with engine.connect() as connection:
-                transaction = await connection.begin()
-                await connection.execute(
-                    text(
-                        "INSERT INTO billing_outbox_events "
-                        "(id,aggregate_type,aggregate_id,event_type,payload,idempotency_key,"
-                        "status,attempt_count,available_at,created_at,updated_at) VALUES "
-                        "(:id,'payment_order',:aggregate_id,'purchase_completed',"
-                        "CAST(:payload AS jsonb),:key,'pending',0,now(),now(),now())"
-                    ),
-                    {
-                        "id": rolled_back_id,
-                        "aggregate_id": str(uuid4()),
-                        "payload": '{"product_code":"analysis_single","provider":"stripe",'
-                        '"market":"RU","currency":"RUB","credits":"1",'
-                        '"private_text":"must-not-project"}',
-                        "key": f"purchase-completed:{rolled_back_id}",
-                    },
-                )
-                assert await connection.scalar(text("SELECT count(*) FROM analytics_events")) == 1
-                await transaction.rollback()
-
-        asyncio.run(rolled_back_insert())
+        asyncio.run(_rolled_back_projection(url, schema, rolled_back_id))
         assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM analytics_events")) == 0
         asyncio.run(
             _execute(
@@ -207,6 +210,5 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
         assert "analysis_single" in properties
         assert "must-not-project" not in properties
         assert "private_text" not in properties
-        asyncio.run(engine.dispose())
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
