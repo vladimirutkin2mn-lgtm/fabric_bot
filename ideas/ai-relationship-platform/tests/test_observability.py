@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from aiogram.types import Update
+from aiogram.types import TelegramObject, Update
 
 from app.bot.observability import TelegramObservabilityMiddleware
 from app.logging import CorrelationIdFilter
@@ -92,7 +92,7 @@ async def test_telegram_middleware_uses_update_id_not_telegram_identity() -> Non
     middleware = TelegramObservabilityMiddleware(reporter)
     observed: list[str] = []
 
-    async def handler(event: Update, data: dict[str, Any]) -> str:
+    async def handler(event: TelegramObject, data: dict[str, Any]) -> str:
         observed.append(current_correlation_id())
         return "ok"
 
@@ -108,7 +108,7 @@ async def test_telegram_middleware_reports_only_safe_failure_metadata() -> None:
     reporter = RecordingReporter()
     middleware = TelegramObservabilityMiddleware(reporter)
 
-    async def handler(event: Update, data: dict[str, Any]) -> None:
+    async def handler(event: TelegramObject, data: dict[str, Any]) -> None:
         raise RuntimeError(sentinel)
 
     with pytest.raises(RuntimeError):
@@ -147,4 +147,4 @@ def test_error_reporter_logs_exception_class_but_not_message(
 def test_logging_filter_adds_safe_placeholder() -> None:
     record = logging.LogRecord("test", logging.INFO, __file__, 1, "hello", (), None)
     assert CorrelationIdFilter().filter(record)
-    assert record.correlation_id == "-"
+    assert getattr(record, "correlation_id") == "-"
