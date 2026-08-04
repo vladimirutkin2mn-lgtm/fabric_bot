@@ -7,10 +7,12 @@ from uuid import UUID
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Analysis, AnalysisPrivateContent, User
+from app.db.models import Analysis, AnalysisPrivateContent, CreditTransaction, User
 from app.providers.analytics import NoOpAnalyticsClient
 from app.repositories.analyses import LLMMetadata, SqlAlchemyAnalysisRepository
 from app.services.data_deletion import DataDeletionOutcome, DataDeletionService
+from app.services.report_renderer import ReportRenderer
+from app.services.report_service import ReportService, ReportStatus
 from app.services.sensitive_content import AESGCMSensitiveContentCipher
 
 pytestmark = pytest.mark.postgres
@@ -96,6 +98,116 @@ async def test_delete_analysis_is_idempotent_and_enforces_owner(
             await service.delete_analysis(analysis_id, owner_id)
             is DataDeletionOutcome.ALREADY_DELETED
         )
+
+
+async def test_simultaneous_deletion_releases_reserved_preview_and_blocks_report(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with payment_db.begin() as session:
+        user = User(telegram_user_id=730004, first_name="Owner")
+        session.add(user)
+        await session.flush()
+        analysis = Analysis(
+            user_id=user.id,
+            status="completed",
+            intake_step="complete",
+            completed_at=datetime.now(UTC),
+            report_access="preview",
+        )
+        session.add(analysis)
+        await session.flush()
+        user.free_preview_status = "reserved"
+        user.free_preview_analysis_id = analysis.id
+        session.add(
+            AnalysisPrivateContent(
+                analysis_id=analysis.id,
+                source_ciphertext=b"private-source",
+                result_ciphertext=b"private-result",
+            )
+        )
+        analysis_id, user_id = analysis.id, user.id
+
+    async def delete() -> DataDeletionOutcome:
+        async with payment_db() as session:
+            return await DataDeletionService(session, NoOpAnalyticsClient()).delete_analysis(
+                analysis_id, user_id
+            )
+
+    outcomes = await asyncio.wait_for(asyncio.gather(delete(), delete()), timeout=5)
+    assert set(outcomes) == {
+        DataDeletionOutcome.DELETED,
+        DataDeletionOutcome.ALREADY_DELETED,
+    }
+    async with payment_db() as session:
+        stored_user = await session.get(User, user_id)
+        assert stored_user is not None
+        assert stored_user.free_preview_status == "available"
+        assert stored_user.free_preview_analysis_id is None
+        report = await ReportService(
+            SqlAlchemyAnalysisRepository(session),
+            ReportRenderer(),
+            NoOpAnalyticsClient(),
+        ).retrieve(analysis_id, user_id)
+        assert report.status is ReportStatus.DELETED
+
+
+async def test_deletion_preserves_consumed_preview_and_financial_references(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    consumed_at = datetime.now(UTC)
+    async with payment_db.begin() as session:
+        user = User(
+            telegram_user_id=730005,
+            first_name="Owner",
+            free_preview_status="consumed",
+            free_preview_used_at=consumed_at,
+        )
+        session.add(user)
+        await session.flush()
+        analysis = Analysis(user_id=user.id, status="processing", intake_step="complete")
+        session.add(analysis)
+        await session.flush()
+        transaction = CreditTransaction(
+            user_id=user.id,
+            type="spend",
+            amount=-1,
+            idempotency_key=f"analysis-delete:{analysis.id}",
+            analysis_id=analysis.id,
+        )
+        session.add(transaction)
+        await session.flush()
+        analysis.cost_units = 1
+        analysis.full_access_transaction_id = transaction.id
+        session.add(
+            AnalysisPrivateContent(
+                analysis_id=analysis.id,
+                source_ciphertext=b"private-source",
+            )
+        )
+        analysis_id, user_id, transaction_id = analysis.id, user.id, transaction.id
+
+    async with payment_db() as session:
+        outcome = await DataDeletionService(session, NoOpAnalyticsClient()).delete_analysis(
+            analysis_id, user_id
+        )
+        assert outcome is DataDeletionOutcome.DELETED
+    async with payment_db() as session:
+        stored_user = await session.get(User, user_id)
+        stored_analysis = await session.get(Analysis, analysis_id)
+        stored_transaction = await session.get(CreditTransaction, transaction_id)
+        assert stored_user is not None
+        assert stored_user.free_preview_status == "consumed"
+        assert stored_user.free_preview_used_at == consumed_at
+        assert stored_analysis is not None
+        assert stored_analysis.full_access_transaction_id == transaction_id
+        assert stored_analysis.cost_units == 1
+        assert stored_transaction is not None
+        assert (
+            stored_transaction.user_id,
+            stored_transaction.type,
+            stored_transaction.amount,
+            stored_transaction.analysis_id,
+        ) == (user_id, "spend", -1, analysis_id)
 
 
 @pytest.mark.parametrize("winner", ["deletion", "completion"])
