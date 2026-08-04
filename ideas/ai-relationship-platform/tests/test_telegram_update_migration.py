@@ -69,7 +69,8 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
             _execute(
                 url,
                 schema,
-                "UPDATE users SET telegram_user_id=NULL,privacy_status='deleted',deleted_at=now() "
+                "UPDATE users SET telegram_user_id=NULL,telegram_username=NULL,first_name=NULL,"
+                "telegram_language=NULL,privacy_status='deleted',deleted_at=now() "
                 f"WHERE id='{user_id}'",
             )
         )
