@@ -75,9 +75,7 @@ async def run(
             except Exception:
                 logger.exception("maintenance_iteration_failed")
             try:
-                await asyncio.wait_for(
-                    stopped.wait(), timeout=runtime.maintenance_interval_seconds
-                )
+                await asyncio.wait_for(stopped.wait(), timeout=runtime.maintenance_interval_seconds)
             except TimeoutError:
                 pass
     finally:
