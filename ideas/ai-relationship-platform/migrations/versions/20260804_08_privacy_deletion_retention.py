@@ -19,11 +19,26 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.drop_constraint("payment_orders_provider_checkout_id_key", "payment_orders", type_="unique")
     op.drop_constraint("payment_orders_provider_payment_id_key", "payment_orders", type_="unique")
+    op.drop_constraint("payment_orders_provider_event_id_key", "payment_orders", type_="unique")
+    op.drop_constraint(
+        "credit_transactions_external_payment_id_key", "credit_transactions", type_="unique"
+    )
+    op.add_column(
+        "credit_transactions", sa.Column("external_payment_provider", sa.String(32), nullable=True)
+    )
     op.create_unique_constraint(
         "uq_payment_provider_checkout", "payment_orders", ["provider", "provider_checkout_id"]
     )
     op.create_unique_constraint(
         "uq_payment_provider_payment", "payment_orders", ["provider", "provider_payment_id"]
+    )
+    op.create_unique_constraint(
+        "uq_payment_provider_event", "payment_orders", ["provider", "provider_event_id"]
+    )
+    op.create_unique_constraint(
+        "uq_credit_external_payment_provider_id",
+        "credit_transactions",
+        ["external_payment_provider", "external_payment_id"],
     )
     op.create_table(
         "analysis_private_content",
@@ -83,7 +98,11 @@ def downgrade() -> None:
             "EXISTS (SELECT 1 FROM payment_orders WHERE provider_checkout_id IS NOT NULL "
             "GROUP BY provider_checkout_id HAVING count(*) > 1) OR "
             "EXISTS (SELECT 1 FROM payment_orders WHERE provider_payment_id IS NOT NULL "
-            "GROUP BY provider_payment_id HAVING count(*) > 1)"
+            "GROUP BY provider_payment_id HAVING count(*) > 1) OR "
+            "EXISTS (SELECT 1 FROM payment_orders WHERE provider_event_id IS NOT NULL "
+            "GROUP BY provider_event_id HAVING count(*) > 1) OR "
+            "EXISTS (SELECT 1 FROM credit_transactions WHERE external_payment_id IS NOT NULL "
+            "GROUP BY external_payment_id HAVING count(*) > 1)"
         )
     )
     if incompatible:
@@ -92,10 +111,23 @@ def downgrade() -> None:
             "restore compatible identity/result data through an audited operation first"
         )
     op.drop_constraint("uq_payment_provider_payment", "payment_orders", type_="unique")
+    op.drop_constraint("uq_payment_provider_event", "payment_orders", type_="unique")
+    op.drop_constraint(
+        "uq_credit_external_payment_provider_id", "credit_transactions", type_="unique"
+    )
     op.drop_constraint("uq_payment_provider_checkout", "payment_orders", type_="unique")
     op.create_unique_constraint(
         "payment_orders_provider_payment_id_key", "payment_orders", ["provider_payment_id"]
     )
+    op.create_unique_constraint(
+        "payment_orders_provider_event_id_key", "payment_orders", ["provider_event_id"]
+    )
+    op.create_unique_constraint(
+        "credit_transactions_external_payment_id_key",
+        "credit_transactions",
+        ["external_payment_id"],
+    )
+    op.drop_column("credit_transactions", "external_payment_provider")
     op.create_unique_constraint(
         "payment_orders_provider_checkout_id_key", "payment_orders", ["provider_checkout_id"]
     )

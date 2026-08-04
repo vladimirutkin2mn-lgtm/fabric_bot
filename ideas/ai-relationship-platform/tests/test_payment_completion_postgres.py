@@ -45,6 +45,43 @@ async def test_ten_claimed_completions_grant_one_purchase(
     assert purchases == 1 and outbox == 1
 
 
+async def test_same_payment_id_completes_independently_across_providers(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    stripe_user, stripe_order = await create_order(
+        payment_db, provider="stripe", checkout_id="stripe-checkout"
+    )
+    yookassa_user, yookassa_order = await create_order(
+        payment_db, provider="yookassa", checkout_id="yookassa-checkout"
+    )
+    service = PaymentCompletionService(payment_db)
+    stripe_payment = paid(stripe_order, "stripe-checkout", "shared-payment")
+    yookassa_payment = paid(yookassa_order, "yookassa-checkout", "shared-payment")
+    assert await service.complete(stripe_order, stripe_payment) == "completed"
+    assert await service.complete(yookassa_order, yookassa_payment) == "completed"
+    assert await service.complete(stripe_order, stripe_payment) == "already_completed"
+    assert await service.complete(yookassa_order, yookassa_payment) == "already_completed"
+    async with payment_db() as session:
+        orders = list(
+            await session.scalars(
+                select(PaymentOrder).where(PaymentOrder.id.in_((stripe_order, yookassa_order)))
+            )
+        )
+        purchases = list(
+            await session.scalars(
+                select(CreditTransaction).where(
+                    CreditTransaction.user_id.in_((stripe_user, yookassa_user)),
+                    CreditTransaction.type == "purchase",
+                )
+            )
+        )
+    assert {order.status for order in orders} == {"completed"}
+    assert len(purchases) == 2
+    assert {row.external_payment_provider for row in purchases} == {"stripe", "yookassa"}
+    assert {row.external_payment_id for row in purchases} == {"shared-payment"}
+    assert sum(row.amount for row in purchases) == 2
+
+
 async def test_webhook_and_reconciliation_race_25_times(
     payment_db: async_sessionmaker[AsyncSession],
 ) -> None:

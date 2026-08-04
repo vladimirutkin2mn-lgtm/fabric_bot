@@ -228,6 +228,7 @@ class PaymentCompletionService:
                 payment_order_id=order.id,
                 product_code=order.product_code,
                 external_payment_id=payment.payment_id,
+                external_payment_provider=order.provider,
             )
         )
         await self._outbox(session, order, "purchase_completed")
@@ -296,8 +297,8 @@ class PaymentCompletionService:
     @staticmethod
     def _known_identity_constraints() -> set[str]:
         return {
-            "payment_orders_provider_payment_id_key",
-            "credit_transactions_external_payment_id_key",
+            "uq_payment_provider_payment",
+            "uq_credit_external_payment_provider_id",
             "credit_transactions_payment_order_id_key",
             "credit_transactions_idempotency_key_key",
             "billing_outbox_events_idempotency_key_key",

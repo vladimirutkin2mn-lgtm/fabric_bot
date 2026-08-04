@@ -271,18 +271,21 @@ class PaymentService:
             payment_owner = await session.scalar(
                 select(PaymentOrder.id).where(
                     PaymentOrder.provider_payment_id == event.payment_id,
+                    PaymentOrder.provider == event.provider,
                     PaymentOrder.id != order.id,
                 )
             )
             event_owner = await session.scalar(
                 select(PaymentOrder.id).where(
                     PaymentOrder.provider_event_id == event.event_id,
+                    PaymentOrder.provider == event.provider,
                     PaymentOrder.id != order.id,
                 )
             )
             ledger_owner = await session.scalar(
                 select(CreditTransaction.id).where(
                     CreditTransaction.external_payment_id == event.payment_id,
+                    CreditTransaction.external_payment_provider == event.provider,
                     CreditTransaction.payment_order_id != order.id,
                 )
             )
@@ -302,6 +305,7 @@ class PaymentService:
                     payment_order_id=order.id,
                     product_code=order.product_code,
                     external_payment_id=event.payment_id,
+                    external_payment_provider=event.provider,
                 )
             )
             return (
@@ -313,9 +317,9 @@ class PaymentService:
     def _is_payment_identity_conflict(exc: IntegrityError) -> bool:
         constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
         return constraint_name in {
-            "payment_orders_provider_payment_id_key",
-            "payment_orders_provider_event_id_key",
-            "credit_transactions_external_payment_id_key",
+            "uq_payment_provider_payment",
+            "uq_payment_provider_event",
+            "uq_credit_external_payment_provider_id",
             "credit_transactions_payment_order_id_key",
             "credit_transactions_idempotency_key_key",
         }

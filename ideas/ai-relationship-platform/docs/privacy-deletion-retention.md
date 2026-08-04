@@ -16,6 +16,11 @@ product/version, amount, currency, safe status/error codes and timestamps remain
 reconciliation. Receipt contact and checkout URL are cleared. This is a minimization decision, not a
 claim about universal statutory retention.
 
+New purchase ledger rows retain `external_payment_provider` together with the raw
+`external_payment_id`; uniqueness is enforced on that pair. This preserves provider-native payment
+IDs for reconciliation without incorrectly treating identifiers issued by different providers as the
+same payment. Pre-migration immutable rows keep a null provider and remain valid without rewriting.
+
 ## Rollout and scheduling
 
 1. Run `alembic upgrade head`.

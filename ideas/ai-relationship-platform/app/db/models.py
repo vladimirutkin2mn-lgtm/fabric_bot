@@ -225,6 +225,7 @@ class PaymentOrder(Base):
     __table_args__ = (
         UniqueConstraint("provider", "provider_checkout_id", name="uq_payment_provider_checkout"),
         UniqueConstraint("provider", "provider_payment_id", name="uq_payment_provider_payment"),
+        UniqueConstraint("provider", "provider_event_id", name="uq_payment_provider_event"),
         CheckConstraint(
             "status IN ('creating','pending','completed','failed','cancelled','manual_review')",
             name="ck_payment_orders_status",
@@ -266,7 +267,7 @@ class PaymentOrder(Base):
     )
     provider_checkout_id: Mapped[str | None] = mapped_column(String(255))
     provider_payment_id: Mapped[str | None] = mapped_column(String(255))
-    provider_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    provider_event_id: Mapped[str | None] = mapped_column(String(255))
     mode: Mapped[str] = mapped_column(String(32), default="one_time", server_default="one_time")
     market: Mapped[str] = mapped_column(String(32), default="RU", server_default="RU")
     product_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
@@ -303,6 +304,11 @@ class CreditTransaction(Base):
 
     __tablename__ = "credit_transactions"
     __table_args__ = (
+        UniqueConstraint(
+            "external_payment_provider",
+            "external_payment_id",
+            name="uq_credit_external_payment_provider_id",
+        ),
         CheckConstraint("amount <> 0", name="ck_credit_transactions_nonzero"),
         CheckConstraint(
             "type IN ('grant','purchase','spend','refund','adjustment','purchase_refund')",
@@ -345,7 +351,8 @@ class CreditTransaction(Base):
         ForeignKey("credit_transactions.id", ondelete="RESTRICT"), unique=True
     )
     product_code: Mapped[str | None] = mapped_column(String(64))
-    external_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    external_payment_id: Mapped[str | None] = mapped_column(String(255))
+    external_payment_provider: Mapped[str | None] = mapped_column(String(32))
     original_purchase_transaction_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("credit_transactions.id", ondelete="RESTRICT")
     )
