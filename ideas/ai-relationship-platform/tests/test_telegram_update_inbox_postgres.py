@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.telegram_models import TelegramUpdateInbox
 from app.services.sensitive_content import AESGCMSensitiveContentCipher
 from app.services.telegram_update_inbox import (
+    ClaimedTelegramUpdate,
     TelegramAcceptOutcome,
     TelegramUpdateInboxService,
 )
@@ -102,10 +103,10 @@ async def test_two_workers_skip_locked_claim_different_updates(
     async def release_second(_: int) -> None:
         second_locked.set()
 
-    async def first_claim():  # type: ignore[no-untyped-def]
+    async def first_claim() -> ClaimedTelegramUpdate | None:
         return await inbox.claim_one("worker-one", after_lock=hold_first)
 
-    async def second_claim():  # type: ignore[no-untyped-def]
+    async def second_claim() -> ClaimedTelegramUpdate | None:
         await asyncio.wait_for(first_locked.wait(), timeout=5)
         return await inbox.claim_one("worker-two", after_lock=release_second)
 
