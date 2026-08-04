@@ -3,15 +3,23 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from aiogram import Bot, Dispatcher
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.admin import router as admin_router
 from app.api.health import router as health_router
 from app.api.payments import router as payments_router
+from app.api.telegram import router as telegram_router
 from app.api.webhooks import router as webhooks_router
+from app.bot.main import close_dispatcher, configure_webhook, create_dispatcher
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
+from app.deployment import (
+    DeploymentSettings,
+    get_deployment_settings,
+    validate_telegram_webhook,
+)
 from app.domain.billing import BillingCatalog
 from app.domain.products import ProductCatalog
 from app.logging import configure_logging
@@ -31,10 +39,15 @@ def create_app(
     settings: Settings | None = None,
     engine: AsyncEngine | None = None,
     observability_settings: ObservabilitySettings | None = None,
+    deployment_settings: DeploymentSettings | None = None,
+    telegram_bot: Bot | None = None,
+    telegram_dispatcher: Dispatcher | None = None,
+    register_telegram_webhook: bool = True,
 ) -> FastAPI:
     """Build an application with injectable configuration and database engine."""
     resolved_settings = settings or get_settings()
     resolved_observability = observability_settings or get_observability_settings()
+    resolved_deployment = deployment_settings or get_deployment_settings()
     resolved_engine = engine or create_engine(str(resolved_settings.database_url))
     sessions = create_session_factory(resolved_engine)
     catalog = ProductCatalog(resolved_settings)
@@ -46,17 +59,47 @@ def create_app(
         else NoOpErrorReporter()
     )
 
+    resolved_bot: Bot | None = None
+    resolved_dispatcher: Dispatcher | None = None
+    owns_bot = False
+    owns_dispatcher = False
+    if resolved_settings.webhook_enabled:
+        validate_telegram_webhook(resolved_settings)
+        resolved_bot = telegram_bot or Bot(
+            token=resolved_settings.telegram_bot_token.get_secret_value()
+        )
+        owns_bot = telegram_bot is None
+        resolved_dispatcher = telegram_dispatcher or create_dispatcher(
+            resolved_settings,
+            resolved_observability,
+            resolved_engine,
+        )
+        owns_dispatcher = telegram_dispatcher is None
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         configure_logging(resolved_settings.log_level)
-        yield
-        await resolved_engine.dispose()
+        try:
+            if (
+                register_telegram_webhook
+                and resolved_bot is not None
+                and resolved_settings.webhook_enabled
+            ):
+                await configure_webhook(resolved_bot, resolved_settings)
+            yield
+        finally:
+            if owns_dispatcher and resolved_dispatcher is not None:
+                await close_dispatcher(resolved_dispatcher)
+            if owns_bot and resolved_bot is not None:
+                await resolved_bot.session.close()
+            await resolved_engine.dispose()
 
     application = FastAPI(title="HeartSignal API", version="0.1.0", lifespan=lifespan)
     application.add_middleware(HttpObservabilityMiddleware, reporter=reporter)
     application.state.db_engine = resolved_engine
     application.state.settings = resolved_settings
     application.state.observability_settings = resolved_observability
+    application.state.deployment_settings = resolved_deployment
     application.state.analytics = analytics
     application.state.error_reporter = reporter
     application.state.admin_metrics_service = AdminMetricsService(sessions)
@@ -86,6 +129,13 @@ def create_app(
     application.include_router(admin_router)
     application.include_router(payments_router)
     application.include_router(webhooks_router)
+    if resolved_bot is not None and resolved_dispatcher is not None:
+        application.state.telegram_bot = resolved_bot
+        application.state.telegram_dispatcher = resolved_dispatcher
+        application.state.telegram_webhook_max_bytes = (
+            resolved_deployment.telegram_webhook_max_bytes
+        )
+        application.include_router(telegram_router)
     return application
 
 
