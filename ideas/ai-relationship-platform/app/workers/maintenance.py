@@ -63,9 +63,10 @@ async def run(
                 result = await run_once(sessions, runtime)
                 logger.info(
                     "maintenance_iteration stale_examined=%s stale_requeued=%s "
-                    "retention_examined=%s retention_cleared=%s",
+                    "stale_financially_closed=%s retention_examined=%s retention_cleared=%s",
                     result.analysis_recovery.examined,
                     result.analysis_recovery.requeued,
+                    result.analysis_recovery.financially_closed,
                     result.retention.examined,
                     result.retention.cleared,
                 )
