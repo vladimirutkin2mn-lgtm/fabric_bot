@@ -77,12 +77,12 @@ def create_dispatcher(
 
 
 async def close_dispatcher(dispatcher: Dispatcher) -> None:
-    """Close provider resources and only engines owned by this dispatcher."""
+    """Close provider/FSM resources and only engines owned by this dispatcher."""
     try:
         await close_llm_client(dispatcher["llm_client"])
     except Exception:
         logger.warning("LLM client shutdown failed")
-    await dispatcher.storage.close()
+    await dispatcher.fsm.close()
     if dispatcher["owns_database_engine"]:
         await dispatcher["database_engine"].dispose()
 
