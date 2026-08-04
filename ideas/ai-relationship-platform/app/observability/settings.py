@@ -26,8 +26,7 @@ class ObservabilitySettings(BaseSettings):
         if not token:
             raise ValueError("enabled admin metrics require a token")
         if self.app_env == "production" and (
-            len(token) < 32
-            or token.lower() in {"change-me", "changeme", "development-only-token"}
+            len(token) < 32 or token.lower() in {"change-me", "changeme", "development-only-token"}
         ):
             raise ValueError("production admin metrics require a strong token")
         return self
