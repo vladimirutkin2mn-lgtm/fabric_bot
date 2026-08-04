@@ -28,11 +28,11 @@ The image runs as a non-root user, exposes `/health/live` and `/health/ready`, a
 Telegram delivery is handled as an **at-least-once** workflow:
 
 1. The API inserts the update into `telegram_update_inbox` using Telegram `update_id` as the primary deduplication key.
-2. The raw JSON payload is encrypted with AES-GCM and a Telegram-specific HKDF purpose before it is committed.
+2. The raw JSON payload is encrypted with AES-GCM and a Telegram-specific HKDF purpose before it is committed. Active-update deduplication uses a keyed, purpose-separated fingerprint rather than a plain content hash.
 3. Only after that transaction commits does the API return `204` to Telegram.
 4. The private worker claims rows with `FOR UPDATE SKIP LOCKED`, a unique claim ID and a bounded lease.
 5. A stale worker cannot complete a claim that has already been reclaimed.
-6. Successful and permanently failed rows retain only operational metadata and a payload fingerprint; ciphertext and Telegram user ID are erased.
+6. Successful and permanently failed rows retain only non-content operational metadata; ciphertext, active fingerprint and Telegram user ID are erased.
 7. Account deletion also scrubs any pending or claimed updates for that Telegram identity through a database trigger.
 
 A worker crash before terminal commit can cause the same update to run again after lease expiry. Business transitions, payment operations and credit ledger writes must therefore remain idempotent. A crash after an outbound Telegram message but before inbox completion may repeat that message; this is an accepted at-least-once boundary for the first production release.
