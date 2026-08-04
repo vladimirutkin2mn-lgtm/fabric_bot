@@ -54,6 +54,46 @@ services:
         value: "30"
 
   - type: worker
+    name: heartsignal-telegram-worker
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    dockerfilePath: ./ideas/ai-relationship-platform/Dockerfile
+    dockerContext: ./ideas/ai-relationship-platform
+    dockerCommand: python -m app.workers.telegram
+    maxShutdownDelaySeconds: 30
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: heartsignal-db
+          property: connectionString
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_URL
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: CONTENT_ENCRYPTION_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: ANALYTICS_BACKEND
+        value: postgres
+      - key: ERROR_REPORTING_BACKEND
+        value: logging
+      - key: PAYMENT_PUBLIC_BASE_URL
+        sync: false
+      - key: BILLING_ENABLED
+        value: "false"
+
+  - type: worker
     name: heartsignal-billing-worker
     runtime: docker
     region: frankfurt
