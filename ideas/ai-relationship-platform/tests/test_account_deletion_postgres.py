@@ -9,11 +9,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import (
+    Analysis,
+    AnalysisPrivateContent,
+    BillingCustomer,
     BillingJob,
     BillingOutboxEvent,
     CreditTransaction,
     PaymentOrder,
     ProviderWebhookEvent,
+    Subscription,
     User,
 )
 from app.providers.analytics import NoOpAnalyticsClient
@@ -134,3 +138,201 @@ async def test_payment_completion_and_account_deletion_race_25_times(
             assert purchase_count == 1 and order.status == "completed"
         else:
             assert purchase_count == 0
+
+
+async def test_complete_account_tombstone_preserves_immutable_ledger(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    sentinel = "PRIVATE-TOMBSTONE-SENTINEL"
+    now = datetime.now(UTC)
+    async with payment_db.begin() as session:
+        user = User(
+            telegram_user_id=88100,
+            telegram_username="private_username",
+            first_name="Private",
+            telegram_language="ru",
+            age_confirmed=True,
+            age_confirmed_at=now,
+            consent_version="privacy-v1",
+            consent_accepted_at=now,
+            onboarding_completed=True,
+        )
+        unrelated = User(telegram_user_id=88101, first_name="Unrelated")
+        session.add_all((user, unrelated))
+        await session.flush()
+        analyses: list[Analysis] = []
+        for status in ("draft", "processing", "completed", "failed"):
+            analysis = Analysis(
+                user_id=user.id,
+                status=status,
+                intake_step="complete",
+                user_goal=sentinel,
+                result_json={"private": sentinel} if status == "completed" else None,
+                completed_at=now if status == "completed" else None,
+                failure_code="safe" if status == "failed" else None,
+                report_access="full" if status == "completed" else "none",
+            )
+            session.add(analysis)
+            await session.flush()
+            session.add(
+                AnalysisPrivateContent(
+                    analysis_id=analysis.id,
+                    source_ciphertext=b"private-source",
+                    result_ciphertext=b"private-result",
+                )
+            )
+            analyses.append(analysis)
+        customer = BillingCustomer(
+            user_id=user.id, provider="stripe", provider_customer_id=sentinel
+        )
+        session.add(customer)
+        await session.flush()
+        subscription = Subscription(
+            user_id=user.id,
+            billing_customer_id=customer.id,
+            provider="stripe",
+            provider_subscription_id=f"sub-{uuid4()}",
+            product_code="subscription_monthly",
+            product_version=1,
+            status="active",
+            encrypted_payment_method=b"private-method",
+            consent_version="billing-v1",
+            consented_at=now,
+        )
+        completed_order = PaymentOrder(
+            user_id=user.id,
+            provider="stripe",
+            product_code="analysis_single",
+            status="completed",
+            credits=1,
+            amount_minor=500,
+            currency="EUR",
+            market="INTERNATIONAL",
+            provider_checkout_id=f"completed-{uuid4()}",
+            provider_payment_id=f"payment-{uuid4()}",
+            completed_at=now,
+            idempotency_key=f"completed:{uuid4()}",
+            commercial_snapshot={},
+        )
+        pending_order = PaymentOrder(
+            user_id=user.id,
+            provider="stripe",
+            product_code="analysis_pack_5",
+            status="pending",
+            credits=5,
+            amount_minor=1800,
+            currency="EUR",
+            market="INTERNATIONAL",
+            provider_checkout_id=f"pending-{uuid4()}",
+            checkout_url="https://private.invalid/checkout",
+            encrypted_receipt_contact=sentinel.encode(),
+            idempotency_key=f"pending:{uuid4()}",
+            commercial_snapshot={},
+        )
+        session.add_all((subscription, completed_order, pending_order))
+        await session.flush()
+        transaction = CreditTransaction(
+            user_id=user.id,
+            type="purchase",
+            amount=1,
+            idempotency_key=f"purchase:{completed_order.id}",
+            payment_order_id=completed_order.id,
+            product_code="analysis_single",
+            external_payment_provider="stripe",
+            external_payment_id=completed_order.provider_payment_id,
+        )
+        event = ProviderWebhookEvent(
+            provider="stripe",
+            provider_event_id=f"evt-{uuid4()}",
+            event_type="payment.completed",
+            provider_object_id=pending_order.provider_checkout_id or "",
+            payload_hash="a" * 64,
+            status="processing",
+        )
+        session.add_all((transaction, event))
+        await session.flush()
+        jobs = [
+            BillingJob(
+                job_type=job_type,
+                provider="stripe",
+                object_type=object_type,
+                object_id=object_id,
+                idempotency_key=f"job:{uuid4()}",
+                status="claimed",
+                claimed_by="worker",
+                claim_id=uuid4(),
+                claimed_at=now,
+                lease_until=now + timedelta(minutes=5),
+            )
+            for job_type, object_type, object_id in (
+                ("webhook_processing", "webhook_event", str(event.id)),
+                ("payment_reconciliation", "payment_order", str(pending_order.id)),
+            )
+        ]
+        session.add_all(jobs)
+        await session.flush()
+        user_id = user.id
+        analysis_ids = [row.id for row in analyses]
+        job_ids = [row.id for row in jobs]
+        transaction_snapshot = (
+            transaction.id,
+            transaction.user_id,
+            transaction.type,
+            transaction.amount,
+            transaction.idempotency_key,
+            transaction.payment_order_id,
+            transaction.external_payment_provider,
+            transaction.external_payment_id,
+        )
+        references = (customer.id, subscription.id, pending_order.id, event.id, unrelated.id)
+    async with payment_db() as session:
+        assert (
+            await DataDeletionService(session, NoOpAnalyticsClient()).delete_account(user_id)
+            is DataDeletionOutcome.DELETED
+        )
+    async with payment_db() as session:
+        stored_user = await session.get(User, user_id)
+        assert stored_user is not None and stored_user.id == user_id
+        assert stored_user.privacy_status == "deleted" and stored_user.deleted_at is not None
+        assert stored_user.telegram_user_id is None and stored_user.telegram_username is None
+        assert stored_user.first_name is None and stored_user.telegram_language is None
+        assert stored_user.consent_version is None and stored_user.consent_accepted_at is None
+        for analysis_id in analysis_ids:
+            stored_analysis = await session.get(Analysis, analysis_id)
+            private = await session.get(AnalysisPrivateContent, analysis_id)
+            assert stored_analysis is not None and stored_analysis.status == "deleted"
+            assert stored_analysis.user_goal is None and stored_analysis.result_json is None
+            assert private is not None
+            assert private.source_ciphertext is None and private.result_ciphertext is None
+        stored_customer = await session.get(BillingCustomer, references[0])
+        stored_subscription = await session.get(Subscription, references[1])
+        stored_order = await session.get(PaymentOrder, references[2])
+        stored_event = await session.get(ProviderWebhookEvent, references[3])
+        stored_unrelated = await session.get(User, references[4])
+        assert stored_customer is not None and stored_customer.provider_customer_id is None
+        assert stored_subscription is not None and stored_subscription.status == "canceled"
+        assert stored_subscription.encrypted_payment_method is None
+        assert stored_order is not None and stored_order.checkout_url is None
+        assert stored_order.encrypted_receipt_contact is None
+        assert stored_event is not None and stored_event.status == "manual_review"
+        assert stored_unrelated is not None and stored_unrelated.privacy_status == "active"
+        for job_id in job_ids:
+            stored_job = await session.get(BillingJob, job_id)
+            assert stored_job is not None and stored_job.status == "manual_review"
+        ledger = await session.get(CreditTransaction, transaction_snapshot[0])
+        assert ledger is not None
+        assert (
+            ledger.id,
+            ledger.user_id,
+            ledger.type,
+            ledger.amount,
+            ledger.idempotency_key,
+            ledger.payment_order_id,
+            ledger.external_payment_provider,
+            ledger.external_payment_id,
+        ) == transaction_snapshot
+    async with payment_db() as session:
+        assert (
+            await DataDeletionService(session, NoOpAnalyticsClient()).delete_account(user_id)
+            is DataDeletionOutcome.ALREADY_DELETED
+        )
