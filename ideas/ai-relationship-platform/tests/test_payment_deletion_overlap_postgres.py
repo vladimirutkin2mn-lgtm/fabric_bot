@@ -1,5 +1,7 @@
 """Deterministic payment completion and privacy deletion lock-overlap tests."""
 
+# ruff: noqa: B023
+
 import asyncio
 from collections.abc import Awaitable, Callable
 from uuid import UUID
