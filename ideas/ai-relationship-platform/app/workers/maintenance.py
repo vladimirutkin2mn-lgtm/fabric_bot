@@ -12,7 +12,7 @@ from app.db.session import create_engine, create_session_factory
 from app.deployment import DeploymentSettings, get_deployment_settings
 from app.logging import configure_logging
 from app.services.analysis_recovery import AnalysisRecoveryResult, requeue_stale_processing
-from app.services.retention import RetentionCleanupResult, cleanup_expired_source
+from app.services.retention import RetentionResult, cleanup_expired_source
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class MaintenanceResult:
     analysis_recovery: AnalysisRecoveryResult
-    retention: RetentionCleanupResult
+    retention: RetentionResult
 
 
 async def run_once(
