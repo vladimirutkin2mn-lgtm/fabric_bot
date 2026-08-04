@@ -19,6 +19,10 @@ class DeploymentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     telegram_webhook_max_bytes: int = Field(default=1_048_576, gt=0, le=10_485_760)
+    telegram_update_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    telegram_update_retry_base_seconds: int = Field(default=5, ge=1, le=3600)
+    telegram_update_max_attempts: int = Field(default=8, ge=1, le=100)
+    telegram_worker_idle_seconds: float = Field(default=0.5, gt=0, le=60)
     analysis_processing_stale_seconds: int = Field(default=900, ge=60)
     maintenance_interval_seconds: float = Field(default=300, gt=0)
     maintenance_batch_size: int = Field(default=100, ge=1, le=10_000)
