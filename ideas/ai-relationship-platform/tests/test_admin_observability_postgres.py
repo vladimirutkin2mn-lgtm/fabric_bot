@@ -123,6 +123,7 @@ async def _seed_metrics(engine: AsyncEngine) -> str:
                 credits=5,
                 amount_minor=69900,
                 currency="RUB",
+                provider_payment_id=f"admin-payment-{payment_order_id}",
                 mode="one_time",
                 market="RU",
                 product_version=1,
