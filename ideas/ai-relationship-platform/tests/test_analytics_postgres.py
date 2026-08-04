@@ -25,7 +25,9 @@ pytestmark = pytest.mark.postgres
 
 
 @pytest.fixture
-async def analytics_postgres() -> AsyncIterator[tuple[AsyncEngine, async_sessionmaker[AsyncSession]]]:
+async def analytics_postgres() -> AsyncIterator[
+    tuple[AsyncEngine, async_sessionmaker[AsyncSession]]
+]:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
@@ -152,9 +154,7 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
     environment = _environment(url, schema)
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        engine = create_async_engine(
-            url, connect_args={"server_settings": {"search_path": schema}}
-        )
+        engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
 
         async def rolled_back_insert() -> None:
             async with engine.connect() as connection:
@@ -176,9 +176,7 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
                         "key": f"purchase-completed:{rolled_back_id}",
                     },
                 )
-                assert (
-                    await connection.scalar(text("SELECT count(*) FROM analytics_events")) == 1
-                )
+                assert await connection.scalar(text("SELECT count(*) FROM analytics_events")) == 1
                 await transaction.rollback()
 
         asyncio.run(rolled_back_insert())
@@ -191,9 +189,9 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
                 "(id,aggregate_type,aggregate_id,event_type,payload,idempotency_key,status,"
                 "attempt_count,available_at,created_at,updated_at) VALUES "
                 f"('{committed_id}','payment_order','{uuid4()}','purchase_completed',"
-                "'{\"product_code\":\"analysis_single\",\"provider\":\"stripe\","
-                "\"market\":\"RU\",\"currency\":\"RUB\",\"credits\":\"1\","
-                "\"private_text\":\"must-not-project\"}'::jsonb,"
+                '\'{"product_code":"analysis_single","provider":"stripe",'
+                '"market":"RU","currency":"RUB","credits":"1",'
+                '"private_text":"must-not-project"}\'::jsonb,'
                 f"'purchase-completed:{committed_id}','pending',0,now(),now(),now())",
             )
         )
