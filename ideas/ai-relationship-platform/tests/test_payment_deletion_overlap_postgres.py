@@ -1,6 +1,6 @@
 """Deterministic payment completion and privacy deletion lock-overlap tests."""
 
-# The closures below are created, awaited and discarded inside each iteration.
+# Closures are created, awaited and discarded inside each iteration.
 # ruff: noqa: B023
 
 import asyncio
