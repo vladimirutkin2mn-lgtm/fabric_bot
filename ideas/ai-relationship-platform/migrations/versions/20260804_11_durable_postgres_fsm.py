@@ -63,6 +63,12 @@ def upgrade() -> None:
         ["user_id"],
         unique=False,
     )
+    op.create_index(
+        "ix_telegram_update_inbox_user_order",
+        "telegram_update_inbox",
+        ["telegram_user_id", "update_id", "status"],
+        unique=False,
+    )
     op.execute(_DELETE_FUNCTION)
     op.execute(
         "CREATE TRIGGER trg_delete_telegram_fsm_on_user_delete "
@@ -78,5 +84,6 @@ def downgrade() -> None:
         raise RuntimeError("downgrade refused: telegram_fsm_state contains live state")
     op.execute("DROP TRIGGER IF EXISTS trg_delete_telegram_fsm_on_user_delete ON users")
     op.execute("DROP FUNCTION IF EXISTS delete_telegram_fsm_on_user_delete()")
+    op.drop_index("ix_telegram_update_inbox_user_order", table_name="telegram_update_inbox")
     op.drop_index("ix_telegram_fsm_state_user", table_name="telegram_fsm_state")
     op.drop_table("telegram_fsm_state")
