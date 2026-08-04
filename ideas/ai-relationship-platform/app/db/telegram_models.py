@@ -29,8 +29,10 @@ class TelegramUpdateInbox(Base):
         ),
         CheckConstraint("attempt_count >= 0", name="ck_telegram_update_inbox_attempts"),
         CheckConstraint(
-            "(status IN ('pending','claimed') AND payload_ciphertext IS NOT NULL) OR "
-            "(status IN ('completed','failed') AND payload_ciphertext IS NULL)",
+            "(status IN ('pending','claimed') AND payload_ciphertext IS NOT NULL "
+            "AND payload_hash IS NOT NULL) OR "
+            "(status IN ('completed','failed') AND payload_ciphertext IS NULL "
+            "AND payload_hash IS NULL)",
             name="ck_telegram_update_inbox_payload_lifecycle",
         ),
         Index("ix_telegram_update_inbox_claimable", "status", "available_at"),
@@ -40,7 +42,7 @@ class TelegramUpdateInbox(Base):
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
     payload_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
-    payload_hash: Mapped[str] = mapped_column(String(64))
+    payload_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     available_at: Mapped[datetime] = mapped_column(
