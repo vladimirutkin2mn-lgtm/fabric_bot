@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
 _PRIVACY_PARENT = "20260803_07"
-_PRIVACY_REVISION = "20260804_08"
+_HEAD_REVISION = "20260804_09"
 
 
 async def _execute(url: str, schema: str, statement: str) -> None:
@@ -77,8 +77,10 @@ def _assert_privacy_refused(
 ) -> None:
     assert failed.returncode != 0
     assert "downgrade refused" in failed.stderr
+    # PostgreSQL rolls back the complete multi-revision downgrade transaction,
+    # including the attempted M7 downgrade that precedes the M6 privacy guard.
     assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-        _PRIVACY_REVISION
+        _HEAD_REVISION
     )
 
 
