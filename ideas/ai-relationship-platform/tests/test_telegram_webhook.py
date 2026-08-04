@@ -122,9 +122,7 @@ async def test_webhook_rejects_oversized_and_invalid_updates(settings: Settings)
     try:
         app = webhook_app(configured, dispatcher, bot, max_bytes=64)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            oversized = await client.post(
-                "/telegram/webhook", headers=headers, content=b"x" * 65
-            )
+            oversized = await client.post("/telegram/webhook", headers=headers, content=b"x" * 65)
             invalid = await client.post(
                 "/telegram/webhook",
                 headers=headers,
