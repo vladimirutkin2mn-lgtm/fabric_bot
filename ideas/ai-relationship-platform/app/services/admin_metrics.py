@@ -1,6 +1,7 @@
 """Aggregate operational and funnel metrics without returning row-level data."""
 
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -93,13 +94,13 @@ class AdminMetricsService:
 
             purchase_count, purchase_total = (
                 await session.execute(
-                    select(func.count(), func.coalesce(func.sum(CreditTransaction.amount), 0)).where(
-                        CreditTransaction.type == "purchase"
-                    )
+                    select(
+                        func.count(), func.coalesce(func.sum(CreditTransaction.amount), 0)
+                    ).where(CreditTransaction.type == "purchase")
                 )
             ).one()
 
-            funnel = dict.fromkeys(_REQUIRED_FUNNEL_EVENTS, 0)
+            funnel: dict[str, int] = {name: 0 for name in _REQUIRED_FUNNEL_EVENTS}
             funnel.update(await _group_counts(session, AnalyticsEvent.event_name, AnalyticsEvent))
 
             rejection_reason = AnalyticsEvent.properties["rejection_reason"].astext
@@ -150,9 +151,9 @@ class AdminMetricsService:
 
 async def _group_counts(
     session: AsyncSession,
-    column: object,
-    source: type[object],
-    *conditions: object,
+    column: Any,
+    source: Any,
+    *conditions: Any,
 ) -> dict[str, int]:
     statement = select(column, func.count()).select_from(source).group_by(column)
     if conditions:
