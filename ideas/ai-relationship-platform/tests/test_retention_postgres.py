@@ -1,5 +1,6 @@
 """Source-retention state transitions on isolated PostgreSQL."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -69,3 +70,32 @@ async def test_retention_dry_run_and_repeat_are_noops(
         assert (await cleanup_expired_source(session)).cleared == 1
     async with payment_db() as session:
         assert (await cleanup_expired_source(session)).cleared == 0
+
+
+async def test_two_skip_locked_workers_partition_expired_rows(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with payment_db.begin() as session:
+        user = User(telegram_user_id=740003, first_name="Retention")
+        session.add(user)
+        await session.flush()
+        for _ in range(20):
+            analysis = Analysis(user_id=user.id, status="draft", intake_step="complete")
+            session.add(analysis)
+            await session.flush()
+            session.add(
+                AnalysisPrivateContent(
+                    analysis_id=analysis.id,
+                    source_ciphertext=b"expired",
+                    source_delete_after=datetime.now(UTC) - timedelta(seconds=1),
+                )
+            )
+
+    async def worker() -> int:
+        async with payment_db() as session:
+            return (await cleanup_expired_source(session, batch_size=10)).cleared
+
+    cleared = await asyncio.gather(worker(), worker())
+    assert sum(cleared) == 20
+    async with payment_db() as session:
+        assert (await cleanup_expired_source(session, batch_size=100)).cleared == 0
