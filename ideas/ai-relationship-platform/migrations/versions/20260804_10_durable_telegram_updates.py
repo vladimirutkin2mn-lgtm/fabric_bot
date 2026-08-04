@@ -22,6 +22,7 @@ BEGIN
         UPDATE telegram_update_inbox
         SET telegram_user_id = NULL,
             payload_ciphertext = NULL,
+            payload_hash = NULL,
             status = 'failed',
             last_error_code = 'user_deleted',
             claimed_by = NULL,
@@ -49,7 +50,7 @@ def upgrade() -> None:
         sa.Column("update_id", sa.BigInteger(), nullable=False),
         sa.Column("telegram_user_id", sa.BigInteger(), nullable=True),
         sa.Column("payload_ciphertext", sa.LargeBinary(), nullable=True),
-        sa.Column("payload_hash", sa.String(64), nullable=False),
+        sa.Column("payload_hash", sa.String(64), nullable=True),
         sa.Column("status", sa.String(16), server_default="pending", nullable=False),
         sa.Column("attempt_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column(
@@ -73,8 +74,10 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("attempt_count >= 0", name="ck_telegram_update_inbox_attempts"),
         sa.CheckConstraint(
-            "(status IN ('pending','claimed') AND payload_ciphertext IS NOT NULL) OR "
-            "(status IN ('completed','failed') AND payload_ciphertext IS NULL)",
+            "(status IN ('pending','claimed') AND payload_ciphertext IS NOT NULL "
+            "AND payload_hash IS NOT NULL) OR "
+            "(status IN ('completed','failed') AND payload_ciphertext IS NULL "
+            "AND payload_hash IS NULL)",
             name="ck_telegram_update_inbox_payload_lifecycle",
         ),
         sa.PrimaryKeyConstraint("update_id"),
