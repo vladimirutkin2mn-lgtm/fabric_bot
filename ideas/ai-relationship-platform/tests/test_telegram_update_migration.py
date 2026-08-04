@@ -7,19 +7,27 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
 
 
-async def _execute(engine: AsyncEngine, statement: str) -> None:
-    async with engine.begin() as connection:
-        await connection.execute(text(statement))
+async def _execute(url: str, schema: str, statement: str) -> None:
+    engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(statement))
+    finally:
+        await engine.dispose()
 
 
-async def _rows(engine: AsyncEngine, statement: str) -> list[tuple[object, ...]]:
-    async with engine.connect() as connection:
-        return list((await connection.execute(text(statement))).tuples())
+async def _rows(url: str, schema: str, statement: str) -> list[tuple[object, ...]]:
+    engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
+    try:
+        async with engine.connect() as connection:
+            return list((await connection.execute(text(statement))).tuples())
+    finally:
+        await engine.dispose()
 
 
 def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity() -> None:
@@ -27,11 +35,6 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
     schema = f"telegram_migration_{uuid4().hex}"
-    admin = create_async_engine(url)
-    engine = create_async_engine(
-        url,
-        connect_args={"server_settings": {"search_path": schema}},
-    )
     environment = {
         **os.environ,
         "DATABASE_URL": url,
@@ -42,18 +45,20 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
     }
     user_id = uuid4()
     try:
-        asyncio.run(_execute(admin, f'CREATE SCHEMA "{schema}"'))
+        asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         asyncio.run(
             _execute(
-                engine,
+                url,
+                schema,
                 "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) "
                 f"VALUES ('{user_id}',980001,'Migration','active')",
             )
         )
         asyncio.run(
             _execute(
-                engine,
+                url,
+                schema,
                 "INSERT INTO telegram_update_inbox "
                 "(update_id,telegram_user_id,payload_ciphertext,payload_hash,status,attempt_count) "
                 "VALUES (3001,980001,decode('010203','hex'),'a','pending',0),"
@@ -62,14 +67,16 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
         )
         asyncio.run(
             _execute(
-                engine,
+                url,
+                schema,
                 "UPDATE users SET telegram_user_id=NULL,privacy_status='deleted',deleted_at=now() "
                 f"WHERE id='{user_id}'",
             )
         )
         rows = asyncio.run(
             _rows(
-                engine,
+                url,
+                schema,
                 "SELECT update_id,telegram_user_id,status,payload_ciphertext,payload_hash,"
                 "last_error_code FROM telegram_update_inbox ORDER BY update_id",
             )
@@ -79,6 +86,4 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
             (3002, None, "completed", None, None, None),
         ]
     finally:
-        asyncio.run(engine.dispose())
-        asyncio.run(_execute(admin, f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
-        asyncio.run(admin.dispose())
+        asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
