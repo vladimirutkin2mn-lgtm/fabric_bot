@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.telegram_models import TelegramUpdateInbox
 from app.services.sensitive_content import (
     ContentPurpose,
-    SensitiveContentCipher,
+    FingerprintingSensitiveContentCipher,
     SensitiveContentError,
 )
 
@@ -46,7 +46,7 @@ class TelegramUpdateInboxService:
     def __init__(
         self,
         sessions: async_sessionmaker[AsyncSession],
-        cipher: SensitiveContentCipher,
+        cipher: FingerprintingSensitiveContentCipher,
         *,
         lease_seconds: int = 300,
         retry_base_seconds: int = 5,
