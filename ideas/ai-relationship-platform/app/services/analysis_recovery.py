@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -69,23 +70,25 @@ async def requeue_stale_processing(
         await session.commit()
         return AnalysisRecoveryResult(examined=0, requeued=0)
 
-    changed = await session.execute(
-        update(Analysis)
-        .where(
-            Analysis.id.in_(ids),
-            Analysis.status == "processing",
-            Analysis.processing_started_at <= cutoff,
-        )
-        .values(
-            status="draft",
-            processing_started_at=None,
-            failure_code=None,
-            completed_at=None,
-        )
+    changed = cast(
+        CursorResult[object],
+        await session.execute(
+            update(Analysis)
+            .where(
+                Analysis.id.in_(ids),
+                Analysis.status == "processing",
+                Analysis.processing_started_at <= cutoff,
+            )
+            .values(
+                status="draft",
+                processing_started_at=None,
+                failure_code=None,
+                completed_at=None,
+            )
+        ),
     )
     await session.commit()
-    rowcount = changed.rowcount if isinstance(changed, CursorResult) else 0
-    return AnalysisRecoveryResult(examined=len(ids), requeued=max(rowcount, 0))
+    return AnalysisRecoveryResult(examined=len(ids), requeued=changed.rowcount)
 
 
 async def retry_failed_analysis(
