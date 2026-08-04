@@ -50,7 +50,7 @@ class TelegramUpdateInboxService:
         sessions: async_sessionmaker[AsyncSession],
         cipher: SensitiveContentCipher,
         *,
-        lease_seconds: int = 120,
+        lease_seconds: int = 300,
         retry_base_seconds: int = 5,
         max_attempts: int = 8,
     ) -> None:
@@ -100,13 +100,16 @@ class TelegramUpdateInboxService:
                 raise RuntimeError("Telegram inbox insert was not visible")
             if row.payload_hash != digest:
                 self._terminal(row, "duplicate_payload_mismatch")
-                return TelegramAcceptResult(
-                    TelegramAcceptOutcome.PAYLOAD_MISMATCH, row.status
-                )
-            if row.telegram_user_id is None and telegram_user_id is not None and row.status in {
-                "pending",
-                "claimed",
-            }:
+                return TelegramAcceptResult(TelegramAcceptOutcome.PAYLOAD_MISMATCH, row.status)
+            if (
+                row.telegram_user_id is None
+                and telegram_user_id is not None
+                and row.status
+                in {
+                    "pending",
+                    "claimed",
+                }
+            ):
                 row.telegram_user_id = telegram_user_id
             return TelegramAcceptResult(
                 TelegramAcceptOutcome.ACCEPTED
