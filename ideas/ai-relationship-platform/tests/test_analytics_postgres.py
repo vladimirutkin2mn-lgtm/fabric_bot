@@ -203,7 +203,8 @@ def test_billing_outbox_projection_is_transactional_and_allow_listed() -> None:
             _scalar(
                 url,
                 schema,
-                "SELECT properties::text FROM analytics_events WHERE event_name='purchase_completed'",
+                "SELECT properties::text FROM analytics_events "
+                "WHERE event_name='purchase_completed'",
             )
         )
         assert isinstance(properties, str)
