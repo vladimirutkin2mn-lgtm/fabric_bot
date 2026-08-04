@@ -1,6 +1,7 @@
 """Transactional, idempotent privacy deletion without mutating the ledger."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
@@ -31,8 +32,15 @@ class DataDeletionOutcome(StrEnum):
 
 
 class DataDeletionService:
-    def __init__(self, session: AsyncSession, analytics: AnalyticsClient) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        analytics: AnalyticsClient,
+        *,
+        _after_user_lock_for_test: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self.session, self.analytics = session, analytics
+        self._after_user_lock_for_test = _after_user_lock_for_test
 
     async def delete_analysis(self, analysis_id: UUID, user_id: UUID) -> DataDeletionOutcome:
         now = datetime.now(UTC)
@@ -65,6 +73,8 @@ class DataDeletionService:
         user = await self.session.scalar(select(User).where(User.id == user_id).with_for_update())
         if user is None:
             return DataDeletionOutcome.NOT_FOUND
+        if self._after_user_lock_for_test is not None:
+            await self._after_user_lock_for_test()
         if user.privacy_status == "deleted":
             await self.session.commit()
             return DataDeletionOutcome.ALREADY_DELETED

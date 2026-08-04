@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -10,6 +11,7 @@ from app.db.models import Analysis, AnalysisPrivateContent, User
 from app.providers.analytics import NoOpAnalyticsClient
 from app.repositories.analyses import SqlAlchemyAnalysisRepository
 from app.repositories.private_content import AnalysisSource, EncryptedAnalysisContentRepository
+from app.services.data_deletion import DataDeletionOutcome, DataDeletionService
 from app.services.report_renderer import ReportRenderer
 from app.services.report_service import ReportService, ReportStatus
 from app.services.retention import cleanup_expired_source
@@ -209,3 +211,106 @@ async def test_context_updates_preserve_original_source_deadline(
         )
         await session.flush()
         assert private.source_delete_after == original
+
+
+@pytest.mark.parametrize("first", ["retention", "deletion"])
+async def test_account_deletion_and_retention_overlap_25_times(
+    payment_db: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+    first: str,
+) -> None:
+    for iteration in range(25):
+        sentinel = f"PRIVATE-RETENTION-RACE-{first}-{iteration}"
+        async with payment_db.begin() as session:
+            user = User(
+                telegram_user_id=(741000 if first == "retention" else 742000) + iteration,
+                first_name="Retention race",
+            )
+            session.add(user)
+            await session.flush()
+            analysis = Analysis(
+                user_id=user.id,
+                status="completed",
+                intake_step="complete",
+                completed_at=datetime.now(UTC),
+                report_access="full",
+                normalized_conversation_json=[{"text": sentinel}],
+                result_json={"summary": sentinel},
+            )
+            session.add(analysis)
+            await session.flush()
+            session.add(
+                AnalysisPrivateContent(
+                    analysis_id=analysis.id,
+                    source_ciphertext=sentinel.encode(),
+                    result_ciphertext=sentinel.encode(),
+                    source_delete_after=datetime.now(UTC) - timedelta(seconds=1),
+                )
+            )
+            user_id, analysis_id = user.id, analysis.id
+
+        retention_locked = asyncio.Event()
+        deletion_locked_user = asyncio.Event()
+        release_retention = asyncio.Event()
+
+        async def after_retention_lock(
+            _ids: tuple[object, ...],
+            locked: asyncio.Event = retention_locked,
+            deletion_locked: asyncio.Event = deletion_locked_user,
+            release: asyncio.Event = release_retention,
+        ) -> None:
+            locked.set()
+            if first == "retention":
+                await asyncio.wait_for(deletion_locked.wait(), timeout=5)
+            else:
+                await asyncio.wait_for(release.wait(), timeout=5)
+
+        async def after_deletion_user_lock(
+            deletion_locked: asyncio.Event = deletion_locked_user,
+            locked: asyncio.Event = retention_locked,
+            release: asyncio.Event = release_retention,
+        ) -> None:
+            deletion_locked.set()
+            if first == "deletion":
+                await asyncio.wait_for(locked.wait(), timeout=5)
+                release.set()
+
+        async def retain(deletion_locked: asyncio.Event = deletion_locked_user) -> int:
+            if first == "deletion":
+                await asyncio.wait_for(deletion_locked.wait(), timeout=5)
+            async with payment_db() as session:
+                return (
+                    await cleanup_expired_source(
+                        session,
+                        batch_size=1,
+                        after_lock=after_retention_lock,
+                    )
+                ).cleared
+
+        async def delete(
+            locked: asyncio.Event = retention_locked,
+            target_user_id: UUID = user_id,
+        ) -> DataDeletionOutcome:
+            if first == "retention":
+                await asyncio.wait_for(locked.wait(), timeout=5)
+            async with payment_db() as session:
+                return await DataDeletionService(
+                    session,
+                    NoOpAnalyticsClient(),
+                    _after_user_lock_for_test=after_deletion_user_lock,
+                ).delete_account(target_user_id)
+
+        retained, deleted = await asyncio.wait_for(asyncio.gather(retain(), delete()), timeout=10)
+        assert retained in {0, 1}
+        assert deleted is DataDeletionOutcome.DELETED
+        async with payment_db() as session:
+            stored_user = await session.get(User, user_id)
+            stored = await session.get(Analysis, analysis_id)
+            private = await session.get(AnalysisPrivateContent, analysis_id)
+            assert stored_user is not None and stored_user.privacy_status == "deleted"
+            assert stored is not None and stored.status == "deleted"
+            assert stored.normalized_conversation_json is None and stored.result_json is None
+            assert private is not None
+            assert private.source_ciphertext is None and private.result_ciphertext is None
+            assert (await cleanup_expired_source(session, batch_size=1)).cleared == 0
+        assert sentinel not in caplog.text
