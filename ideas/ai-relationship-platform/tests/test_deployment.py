@@ -4,6 +4,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from app.cli.release import asyncpg_dsn
+from app.config import Settings
 from app.db.session import normalize_async_database_url
 from app.deployment import DeploymentSettings, validate_telegram_webhook
 
@@ -22,7 +23,7 @@ def test_managed_postgres_urls_select_asyncpg() -> None:
     assert asyncpg_dsn("postgresql://u:p@db/name") == "postgresql://u:p@db/name"
 
 
-def test_webhook_policy_accepts_local_and_strong_production_urls(settings) -> None:  # type: ignore[no-untyped-def]
+def test_webhook_policy_accepts_local_and_strong_production_urls(settings: Settings) -> None:
     local = settings.model_copy(
         update={
             "telegram_webhook_url": "http://localhost:8000/telegram/webhook",
@@ -51,7 +52,9 @@ def test_webhook_policy_accepts_local_and_strong_production_urls(settings) -> No
         ("https://example.com/telegram/webhook", "unsafe secret value"),
     ],
 )
-def test_production_webhook_policy_fails_closed(settings, url: str, secret: str) -> None:  # type: ignore[no-untyped-def]
+def test_production_webhook_policy_fails_closed(
+    settings: Settings, url: str, secret: str
+) -> None:
     configured = settings.model_copy(
         update={
             "app_env": "production",
