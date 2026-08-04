@@ -23,6 +23,19 @@ def test_encryption_is_random_and_authenticated() -> None:
         )
 
 
+def test_keyed_fingerprints_are_deterministic_and_domain_separated() -> None:
+    value = {"private": "short guessable text", "number": 1}
+    cipher = AESGCMSensitiveContentCipher("fingerprint key material")
+    first = cipher.fingerprint_json(ContentPurpose.TELEGRAM_UPDATE, value)
+    second = cipher.fingerprint_json(ContentPurpose.TELEGRAM_UPDATE, value)
+    assert first == second
+    assert first != cipher.fingerprint_json(ContentPurpose.ANALYSIS_SOURCE, value)
+    assert first != AESGCMSensitiveContentCipher("different key").fingerprint_json(
+        ContentPurpose.TELEGRAM_UPDATE, value
+    )
+    assert "short guessable text" not in first
+
+
 def test_tampering_and_repr_do_not_disclose_private_values() -> None:
     secret = "unique-secret-key-sentinel"
     cipher = AESGCMSensitiveContentCipher(secret)
