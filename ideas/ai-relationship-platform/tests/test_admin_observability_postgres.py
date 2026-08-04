@@ -19,6 +19,7 @@ from app.db.models import (
     BillingJob,
     BillingOutboxEvent,
     CreditTransaction,
+    PaymentOrder,
     User,
 )
 from app.observability.settings import ObservabilitySettings
@@ -51,7 +52,7 @@ def _settings(url: str) -> Settings:
 async def _seed_metrics(engine: AsyncEngine) -> str:
     sentinel = "private-admin-sentinel"
     now = datetime.now(UTC)
-    user_id = uuid4()
+    user_id, payment_order_id = uuid4(), uuid4()
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions.begin() as session:
         session.add(
@@ -112,11 +113,30 @@ async def _seed_metrics(engine: AsyncEngine) -> str:
             ]
         )
         session.add(
+            PaymentOrder(
+                id=payment_order_id,
+                user_id=user_id,
+                provider="stripe",
+                product_code="analysis_pack_5",
+                status="completed",
+                credits=5,
+                amount_minor=69900,
+                currency="RUB",
+                mode="one_time",
+                market="RU",
+                product_version=1,
+                commercial_snapshot={},
+                completed_at=now,
+            )
+        )
+        session.add(
             CreditTransaction(
                 user_id=user_id,
                 type="purchase",
                 amount=5,
-                idempotency_key=f"purchase:{uuid4()}",
+                idempotency_key=f"purchase:{payment_order_id}",
+                payment_order_id=payment_order_id,
+                product_code="analysis_pack_5",
             )
         )
         session.add_all(
