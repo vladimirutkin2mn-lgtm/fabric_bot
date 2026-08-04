@@ -36,9 +36,7 @@ def upgrade() -> None:
         sa.Column("chat_id", sa.BigInteger(), nullable=False),
         sa.Column("user_id", sa.BigInteger(), nullable=False),
         sa.Column("thread_id", sa.BigInteger(), server_default="0", nullable=False),
-        sa.Column(
-            "business_connection_id", sa.String(255), server_default="", nullable=False
-        ),
+        sa.Column("business_connection_id", sa.String(255), server_default="", nullable=False),
         sa.Column("destiny", sa.String(255), server_default="default", nullable=False),
         sa.Column("state", sa.String(255), nullable=True),
         sa.Column("data_ciphertext", sa.LargeBinary(), nullable=True),
