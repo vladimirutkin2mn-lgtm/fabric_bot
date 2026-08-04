@@ -59,6 +59,7 @@ async def test_accept_is_idempotent_encrypted_and_completion_erases_payload(
         assert row is not None and row.status == "pending"
         assert row.telegram_user_id == 42
         assert row.payload_ciphertext is not None
+        assert row.payload_hash is not None
         assert b"private conversation text" not in row.payload_ciphertext
 
     claim = await inbox.claim_one("worker-one")
@@ -71,6 +72,7 @@ async def test_accept_is_idempotent_encrypted_and_completion_erases_payload(
         assert row is not None and row.status == "completed"
         assert row.telegram_user_id is None
         assert row.payload_ciphertext is None
+        assert row.payload_hash is None
         assert row.completed_at is not None
 
 
@@ -87,6 +89,7 @@ async def test_duplicate_update_id_with_different_payload_fails_closed(
         assert row is not None and row.status == "failed"
         assert row.telegram_user_id is None
         assert row.payload_ciphertext is None
+        assert row.payload_hash is None
         assert row.last_error_code == "duplicate_payload_mismatch"
 
 
@@ -147,4 +150,5 @@ async def test_retry_exhaustion_erases_private_payload(
         assert row is not None and row.status == "failed"
         assert row.telegram_user_id is None
         assert row.payload_ciphertext is None
+        assert row.payload_hash is None
         assert row.last_error_code == "retry_exhausted"
