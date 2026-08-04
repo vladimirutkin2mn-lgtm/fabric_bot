@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+import ipaddress
 from functools import lru_cache
 from typing import Literal
 
@@ -52,8 +53,10 @@ class Settings(BaseSettings):
     yookassa_shop_id: SecretStr = Field(default=SecretStr(""), repr=False)
     yookassa_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
     yookassa_receipt_email: str = ""
+    yookassa_receipts_required: bool = False
     yookassa_vat_code: int = Field(default=1, ge=1, le=6)
     yookassa_webhook_ip_allowlist: str = ""
+    yookassa_trusted_proxy_allowlist: str = ""
     billing_trusted_proxies: str = ""
     stripe_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
     stripe_webhook_secret: SecretStr = Field(default=SecretStr(""), repr=False)
@@ -62,14 +65,22 @@ class Settings(BaseSettings):
     stripe_price_analysis_single_usd: str = ""
     stripe_price_analysis_pack_5_eur: str = ""
     stripe_price_analysis_pack_5_usd: str = ""
+    stripe_amount_analysis_single_eur_minor: int | None = Field(default=None, gt=0)
+    stripe_amount_analysis_single_usd_minor: int | None = Field(default=None, gt=0)
+    stripe_amount_analysis_pack_5_eur_minor: int | None = Field(default=None, gt=0)
+    stripe_amount_analysis_pack_5_usd_minor: int | None = Field(default=None, gt=0)
     stripe_price_subscription_monthly_eur: str = ""
     stripe_price_subscription_monthly_usd: str = ""
     billing_worker_lease_seconds: int = Field(default=60, gt=0)
     billing_worker_max_attempts: int = Field(default=10, ge=1)
     billing_retry_base_seconds: int = Field(default=30, gt=0)
     billing_reconciliation_interval_seconds: int = Field(default=900, gt=0)
+    billing_pending_reconciliation_seconds: int = Field(default=900, gt=0)
+    payment_webhook_max_bytes: int = Field(default=262_144, gt=0)
+    provider_request_timeout_seconds: float = Field(default=15, gt=0)
     subscription_grace_period_days: int = Field(default=3, ge=0)
     billing_consent_version: str = "billing-v1"
+    analytics_enabled: bool = False
 
     @field_validator("payment_currency")
     @classmethod
@@ -98,17 +109,60 @@ class Settings(BaseSettings):
             raise ValueError("production billing requires an HTTPS public URL")
         if self.billing_enabled and self.payment_provider == "mock":
             raise ValueError("mock payment provider is forbidden in production")
+        if (
+            self.billing_enabled
+            and self.payment_provider != "mock"
+            and not (self.yookassa_enabled or self.stripe_enabled)
+        ):
+            raise ValueError("production billing requires an enabled payment provider")
+        if self.analytics_enabled:
+            raise ValueError("analytics delivery client is not configured")
         if self.yookassa_enabled and not (
-            self.yookassa_shop_id.get_secret_value()
-            and self.yookassa_secret_key.get_secret_value()
-            and self.yookassa_receipt_email
+            self.yookassa_shop_id.get_secret_value() and self.yookassa_secret_key.get_secret_value()
         ):
             raise ValueError("YooKassa configuration is incomplete")
+        if self.yookassa_enabled:
+            if (
+                self.yookassa_receipts_required
+                and not self.content_encryption_key.get_secret_value()
+            ):
+                raise ValueError("YooKassa receipts require content encryption")
+            if not self.yookassa_webhook_ip_allowlist.strip():
+                raise ValueError("YooKassa webhook IP allowlist is required")
+            for configured in (
+                self.yookassa_webhook_ip_allowlist,
+                self.yookassa_trusted_proxy_allowlist,
+            ):
+                try:
+                    for value in configured.split(","):
+                        if value.strip():
+                            ipaddress.ip_network(value.strip(), strict=False)
+                except ValueError as exc:
+                    raise ValueError("invalid YooKassa network allowlist") from exc
         stripe_key = self.stripe_secret_key.get_secret_value()
         if self.stripe_enabled and not (
             stripe_key and self.stripe_webhook_secret.get_secret_value()
         ):
             raise ValueError("Stripe configuration is incomplete")
+        if self.stripe_enabled and not all(
+            (
+                self.stripe_price_analysis_single_eur,
+                self.stripe_price_analysis_single_usd,
+                self.stripe_price_analysis_pack_5_eur,
+                self.stripe_price_analysis_pack_5_usd,
+            )
+        ):
+            raise ValueError("Stripe one-time Price configuration is incomplete")
+        if self.stripe_enabled and not all(
+            amount is not None
+            for amount in (
+                self.stripe_amount_analysis_single_eur_minor,
+                self.stripe_amount_analysis_single_usd_minor,
+                self.stripe_amount_analysis_pack_5_eur_minor,
+                self.stripe_amount_analysis_pack_5_usd_minor,
+            )
+        ):
+            raise ValueError("Stripe one-time expected amounts are incomplete")
         if self.stripe_enabled and stripe_key.startswith(("sk_test_", "rk_test_")):
             raise ValueError("Stripe test credentials are forbidden in production")
         if self.subscriptions_enabled and not (

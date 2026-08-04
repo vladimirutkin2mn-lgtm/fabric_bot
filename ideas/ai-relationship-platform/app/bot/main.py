@@ -10,12 +10,14 @@ from app.bot.handlers import router
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
+from app.domain.billing import BillingCatalog
 from app.domain.products import ProductCatalog
 from app.logging import configure_logging
 from app.providers.analytics import NoOpAnalyticsClient
 from app.providers.llm.base import close_llm_client
 from app.providers.llm.factory import create_llm_client
-from app.providers.payments.factory import create_payment_provider
+from app.providers.payments.composition import create_payment_components
+from app.services.checkout_service import CheckoutService
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +27,17 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher = Dispatcher()
     engine = create_engine(str(settings.database_url))
     llm = create_llm_client(settings)
-    payment_provider = create_payment_provider(settings)
+    payments = create_payment_components(settings)
+    sessions = create_session_factory(engine)
     product_catalog = ProductCatalog(settings)
     dependency_middleware = OnboardingDependencyMiddleware(
-        create_session_factory(engine),
+        sessions,
         NoOpAnalyticsClient(),
         settings,
         llm,
-        payment_provider,
+        payments.legacy,
         product_catalog,
+        CheckoutService(sessions, settings, BillingCatalog(settings), payments.gateways),
     )
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)

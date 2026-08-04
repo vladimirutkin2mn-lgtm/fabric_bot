@@ -12,6 +12,17 @@ def production(**values: object) -> Settings:
         "content_encryption_key": SecretStr("x"),
         "payment_public_base_url": "https://pay.example",
         "payment_provider": "stripe",
+        "stripe_enabled": True,
+        "stripe_secret_key": "sk_live_redacted",
+        "stripe_webhook_secret": "whsec_redacted",
+        "stripe_price_analysis_single_eur": "price_eur_1",
+        "stripe_price_analysis_single_usd": "price_usd_1",
+        "stripe_price_analysis_pack_5_eur": "price_eur_5",
+        "stripe_price_analysis_pack_5_usd": "price_usd_5",
+        "stripe_amount_analysis_single_eur_minor": 400,
+        "stripe_amount_analysis_single_usd_minor": 500,
+        "stripe_amount_analysis_pack_5_eur_minor": 1800,
+        "stripe_amount_analysis_pack_5_usd_minor": 2200,
     }
     defaults.update(values)
     return Settings(**defaults)  # type: ignore[arg-type]
