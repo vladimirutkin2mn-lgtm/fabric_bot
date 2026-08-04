@@ -19,6 +19,7 @@ def test_managed_postgres_urls_select_asyncpg() -> None:
     assert normalize_async_database_url("postgresql+asyncpg://u:p@db/name") == (
         "postgresql+asyncpg://u:p@db/name"
     )
+    assert asyncpg_dsn("postgres://u:p@db/name") == "postgresql://u:p@db/name"
     assert asyncpg_dsn("postgresql+asyncpg://u:p@db/name") == "postgresql://u:p@db/name"
     assert asyncpg_dsn("postgresql://u:p@db/name") == "postgresql://u:p@db/name"
 
