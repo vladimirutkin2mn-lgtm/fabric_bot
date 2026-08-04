@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from starlette.types import Message, Receive, Scope, Send
+from starlette.types import Receive, Scope, Send
 
 from app.observability.context import current_correlation_id
 from app.observability.http import HttpObservabilityMiddleware
