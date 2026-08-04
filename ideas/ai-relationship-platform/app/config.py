@@ -105,6 +105,13 @@ class Settings(BaseSettings):
             raise ValueError("refunds require billing")
         if self.app_env != "production":
             return self
+        encryption_key = self.content_encryption_key.get_secret_value().strip()
+        if len(encryption_key) < 32 or encryption_key.lower() in {
+            "change-me",
+            "changeme",
+            "development-only-key",
+        }:
+            raise ValueError("production requires a strong content encryption key")
         if self.billing_enabled and not self.payment_public_base_url.startswith("https://"):
             raise ValueError("production billing requires an HTTPS public URL")
         if self.billing_enabled and self.payment_provider == "mock":

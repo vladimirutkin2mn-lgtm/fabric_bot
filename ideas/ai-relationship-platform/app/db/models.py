@@ -42,9 +42,9 @@ class User(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
     telegram_username: Mapped[str | None] = mapped_column(String(255))
-    first_name: Mapped[str] = mapped_column(String(255))
+    first_name: Mapped[str | None] = mapped_column(String(255))
     telegram_language: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -73,6 +73,10 @@ class User(Base):
         nullable=True,
     )
     free_preview_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    privacy_status: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active"
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Analysis(Base):
@@ -185,6 +189,33 @@ class Analysis(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     user: Mapped[User] = relationship(back_populates="analyses", foreign_keys=[user_id])
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    private_content: Mapped["AnalysisPrivateContent | None"] = relationship(
+        back_populates="analysis", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class AnalysisPrivateContent(Base):
+    """Authenticated ciphertext, separated from operational analysis metadata."""
+
+    __tablename__ = "analysis_private_content"
+    analysis_id: Mapped[UUID] = mapped_column(
+        ForeignKey("analyses.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    result_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    source_format_version: Mapped[int | None] = mapped_column(Integer)
+    result_format_version: Mapped[int | None] = mapped_column(Integer)
+    source_delete_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    source_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    analysis: Mapped[Analysis] = relationship(back_populates="private_content")
 
 
 class PaymentOrder(Base):

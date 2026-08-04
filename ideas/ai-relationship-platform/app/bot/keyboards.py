@@ -40,6 +40,32 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def privacy_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Удалить все мои данные", callback_data="privacy:delete_all"
+                )
+            ],
+            [InlineKeyboardButton(text="Вернуться в меню", callback_data="privacy:menu")],
+        ]
+    )
+
+
+def privacy_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да, удалить безвозвратно", callback_data="privacy:confirm_all"
+                )
+            ],
+            [InlineKeyboardButton(text="Отмена", callback_data="privacy:cancel")],
+        ]
+    )
+
+
 def exit_rows(analysis_id: UUID, *, resend: bool = False) -> list[list[InlineKeyboardButton]]:
     rows: list[list[InlineKeyboardButton]] = []
     if resend:

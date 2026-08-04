@@ -19,12 +19,14 @@ from app.services.checkout_service import CheckoutService
 from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.credits_service import CreditsService
+from app.services.data_deletion import DataDeletionService
 from app.services.monetized_analysis import MonetizedAnalysisService
 from app.services.onboarding import OnboardingService
 from app.services.payment_service import PaymentService
 from app.services.preview_entitlement import PreviewEntitlementService
 from app.services.report_renderer import ReportRenderer
 from app.services.report_service import ReportService
+from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
 
 
 class OnboardingDependencyMiddleware(BaseMiddleware):
@@ -54,7 +56,12 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         async with self._sessions() as session:
-            analyses = SqlAlchemyAnalysisRepository(session)
+            cipher = AESGCMSensitiveContentCipher(
+                decode_configured_key(self._settings.content_encryption_key.get_secret_value())
+            )
+            analyses = SqlAlchemyAnalysisRepository(
+                session, cipher, self._settings.raw_content_retention_days
+            )
             data["onboarding"] = OnboardingService(
                 SqlAlchemyUserRepository(session), self._analytics
             )
@@ -103,4 +110,6 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
             data["reports"] = ReportService(analyses, ReportRenderer(), self._analytics)
             data["analysis_repository"] = analyses
             data["analytics"] = self._analytics
+            data["data_deletion"] = DataDeletionService(session, self._analytics)
+            data["privacy_retention_days"] = self._settings.raw_content_retention_days
             return await handler(event, data)

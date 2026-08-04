@@ -9,8 +9,11 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.db.models import Analysis
+from app.repositories.private_content import AnalysisSource, EncryptedAnalysisContentRepository
+from app.services.sensitive_content import SensitiveContentCipher
 
 
 class AnalysisRepository(Protocol):
@@ -81,8 +84,28 @@ class AnalysisProcessingRepository(Protocol):
 
 
 class SqlAlchemyAnalysisRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        cipher: SensitiveContentCipher | None = None,
+        retention_days: int = 30,
+    ) -> None:
         self._session = session
+        self._private = (
+            EncryptedAnalysisContentRepository(session, cipher, retention_days) if cipher else None
+        )
+
+    async def store_private_source(self, analysis: Analysis, source: AnalysisSource) -> None:
+        if self._private is None:
+            raise RuntimeError("encrypted content repository is not configured")
+        await self._private.store_source(analysis.id, source)
+        analysis.normalized_conversation_json = analysis.participants_json = None
+        analysis.user_participant_label = analysis.user_goal = analysis.relationship_stage = None
+
+    async def load_private_source(self, analysis: Analysis) -> AnalysisSource | None:
+        if self._private is None:
+            return None
+        return await self._private.load_source(analysis.id, analysis.user_id)
 
     async def get_active(self, user_id: UUID) -> Analysis | None:
         return cast(
@@ -238,6 +261,15 @@ class SqlAlchemyAnalysisRepository:
     async def load_processing(self, analysis_id: UUID, user_id: UUID) -> Analysis | None:
         """Load claimed input and close the read transaction before network I/O."""
         analysis = await self.get_owned(analysis_id, user_id)
+        if analysis is not None and self._private is not None:
+            source = await self._private.load_source(analysis_id, user_id)
+            if source is None:
+                return None
+            set_committed_value(analysis, "normalized_conversation_json", source.messages)
+            set_committed_value(analysis, "participants_json", source.participants)
+            set_committed_value(analysis, "user_participant_label", source.user_participant_label)
+            set_committed_value(analysis, "user_goal", source.user_goal)
+            set_committed_value(analysis, "relationship_stage", source.relationship_stage)
         await self._session.commit()
         return analysis
 
@@ -309,9 +341,9 @@ class SqlAlchemyAnalysisRepository:
         failure_code: str | None,
         metadata: LLMMetadata,
     ) -> None:
-        values = {
+        values: dict[str, object] = {
             "status": status,
-            "result_json": result,
+            "result_json": None,
             "failure_code": failure_code,
             "llm_provider": metadata.provider,
             "model_name": metadata.model,
@@ -323,6 +355,13 @@ class SqlAlchemyAnalysisRepository:
             "provider_request_id": metadata.provider_request_id,
             "completed_at": datetime.now(UTC) if status == "completed" else None,
         }
+        if status == "completed" and result is not None and self._private is not None:
+            stored = await self._private.store_result(analysis_id, result)
+            if not stored:
+                await self._session.rollback()
+                raise RuntimeError("Analysis owner is deleted")
+        elif status == "completed" and self._private is None:
+            values["result_json"] = result
         statement = (
             update(Analysis)
             .where(Analysis.id == analysis_id, Analysis.status == "processing")
