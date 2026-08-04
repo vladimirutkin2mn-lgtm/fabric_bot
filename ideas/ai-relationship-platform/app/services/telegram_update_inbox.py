@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -18,6 +19,8 @@ from app.services.sensitive_content import (
     SensitiveContentCipher,
     SensitiveContentError,
 )
+
+AfterLockHook = Callable[[int], Awaitable[None]]
 
 
 class TelegramAcceptOutcome(StrEnum):
@@ -110,7 +113,11 @@ class TelegramUpdateInboxService:
             )
 
     async def claim_one(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        after_lock: AfterLockHook | None = None,
     ) -> ClaimedTelegramUpdate | None:
         timestamp = now or datetime.now(UTC)
         async with self._sessions.begin() as session:
@@ -130,6 +137,8 @@ class TelegramUpdateInboxService:
             )
             if row is None:
                 return None
+            if after_lock is not None:
+                await after_lock(row.update_id)
             if row.payload_ciphertext is None:
                 self._terminal(row, "missing_encrypted_payload", timestamp)
                 return None
@@ -163,7 +172,6 @@ class TelegramUpdateInboxService:
             if row is None or row.status != "claimed" or row.claim_id != claim_id:
                 return False
             self._terminal(row, None)
-            row.status = "completed"
             return True
 
     async def retry(self, update_id: int, claim_id: UUID, code: str) -> bool:
