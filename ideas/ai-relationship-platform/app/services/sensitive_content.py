@@ -62,9 +62,9 @@ class AESGCMSensitiveContentCipher:
 
     @staticmethod
     def _canonical_json(value: object) -> bytes:
-        return json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
 
     def _key(self, purpose: ContentPurpose) -> bytes:
         derived: bytes = HKDF(
