@@ -103,11 +103,13 @@ async def backfill_batch(
         analysis.normalized_conversation_json = analysis.participants_json = None
         analysis.user_participant_label = analysis.user_goal = analysis.relationship_stage = None
         analysis.result_json = None
+    count = len(rows)
+    next_after_id = rows[-1].id if rows else after_id
     if dry_run:
         await session.rollback()
     else:
         await session.commit()
-    return len(rows), conflicts, rows[-1].id if rows else after_id
+    return count, conflicts, next_after_id
 
 
 async def main() -> int:

@@ -8,9 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.cli.backfill_private_content import backfill_batch
 from app.db.models import Analysis, AnalysisPrivateContent, User
-from app.services.sensitive_content import AESGCMSensitiveContentCipher
+from app.services.sensitive_content import AESGCMSensitiveContentCipher, ContentPurpose
 
 pytestmark = pytest.mark.postgres
+
+
+class FailingCipher(AESGCMSensitiveContentCipher):
+    def encrypt_json(self, purpose: ContentPurpose, value: object) -> bytes:
+        raise RuntimeError("safe encryption failure")
 
 
 async def test_conflict_batch_does_not_block_three_later_batches(
@@ -93,3 +98,62 @@ async def test_backfill_dry_run_scans_all_batches_without_changes(
     assert examined == 7
     async with payment_db() as session:
         assert await session.scalar(select(func.count()).select_from(AnalysisPrivateContent)) == 0
+
+
+async def test_source_and_result_backfill_are_atomic_and_repeat_is_noop(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    cipher = AESGCMSensitiveContentCipher("backfill-postgres-test-key-material")
+    async with payment_db.begin() as session:
+        user = User(telegram_user_id=750003, first_name="Backfill")
+        session.add(user)
+        await session.flush()
+        analysis = Analysis(
+            user_id=user.id,
+            status="completed",
+            intake_step="complete",
+            normalized_conversation_json=[{"text": "private source"}],
+            result_json={"summary": "private result"},
+            completed_at=user.created_at,
+        )
+        session.add(analysis)
+        await session.flush()
+        analysis_id = analysis.id
+    async with payment_db() as session:
+        assert (await backfill_batch(session, cipher))[0] == 1
+    async with payment_db() as session:
+        stored = await session.get(Analysis, analysis_id)
+        private = await session.get(AnalysisPrivateContent, analysis_id)
+        assert stored is not None
+        assert stored.normalized_conversation_json is None and stored.result_json is None
+        assert private is not None
+        assert private.source_ciphertext is not None and private.result_ciphertext is not None
+    async with payment_db() as session:
+        assert (await backfill_batch(session, cipher))[0] == 0
+
+
+async def test_encryption_failure_rolls_back_plaintext_and_ciphertext(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with payment_db.begin() as session:
+        user = User(telegram_user_id=750004, first_name="Backfill")
+        session.add(user)
+        await session.flush()
+        analysis = Analysis(
+            user_id=user.id,
+            status="draft",
+            intake_step="complete",
+            user_goal="private goal",
+        )
+        session.add(analysis)
+        await session.flush()
+        analysis_id = analysis.id
+    async with payment_db() as session:
+        with pytest.raises(RuntimeError, match="safe encryption failure"):
+            await backfill_batch(session, FailingCipher("failure-test-key-material"))
+        await session.rollback()
+    async with payment_db() as session:
+        stored = await session.get(Analysis, analysis_id)
+        private = await session.get(AnalysisPrivateContent, analysis_id)
+        assert stored is not None and stored.user_goal == "private goal"
+        assert private is None
