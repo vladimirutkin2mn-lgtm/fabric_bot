@@ -88,9 +88,7 @@ def test_clean_privacy_migration_upgrade_downgrade_upgrade() -> None:
     environment = _environment(url, schema)
     try:
         _upgrade_head(environment)
-        subprocess.run(
-            ("alembic", "downgrade", _PRIVACY_PARENT), check=True, env=environment
-        )
+        subprocess.run(("alembic", "downgrade", _PRIVACY_PARENT), check=True, env=environment)
         _upgrade_head(environment)
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
