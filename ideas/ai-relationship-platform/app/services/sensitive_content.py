@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 class ContentPurpose(StrEnum):
     ANALYSIS_SOURCE = "analysis-source"
     ANALYSIS_RESULT = "analysis-result"
+    TELEGRAM_UPDATE = "telegram-update"
 
 
 class SensitiveContentError(ValueError):
