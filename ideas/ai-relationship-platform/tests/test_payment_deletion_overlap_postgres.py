@@ -162,9 +162,7 @@ async def test_claimed_payment_and_deletion_overlap_25_times(
             order = await session.get(PaymentOrder, order_id)
             job = await session.get(BillingJob, job_id)
             event = (
-                await session.get(ProviderWebhookEvent, event_id)
-                if event_id is not None
-                else None
+                await session.get(ProviderWebhookEvent, event_id) if event_id is not None else None
             )
         assert user is not None and user.privacy_status == "deleted"
         assert order is not None
