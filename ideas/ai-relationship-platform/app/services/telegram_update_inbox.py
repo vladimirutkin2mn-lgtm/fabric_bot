@@ -103,7 +103,10 @@ class TelegramUpdateInboxService:
                 return TelegramAcceptResult(
                     TelegramAcceptOutcome.PAYLOAD_MISMATCH, row.status
                 )
-            if row.telegram_user_id is None and telegram_user_id is not None:
+            if row.telegram_user_id is None and telegram_user_id is not None and row.status in {
+                "pending",
+                "claimed",
+            }:
                 row.telegram_user_id = telegram_user_id
             return TelegramAcceptResult(
                 TelegramAcceptOutcome.ACCEPTED
@@ -216,6 +219,7 @@ class TelegramUpdateInboxService:
         now: datetime | None = None,
     ) -> None:
         row.status = "failed" if error_code is not None else "completed"
+        row.telegram_user_id = None
         row.payload_ciphertext = None
         row.last_error_code = error_code
         row.completed_at = now or datetime.now(UTC)
