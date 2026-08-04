@@ -1,6 +1,7 @@
 """Aggregate operational and funnel metrics without returning row-level data."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -162,5 +163,5 @@ async def _group_counts(
     return {str(key): int(count) for key, count in rows if key is not None}
 
 
-def _float_or_none(value: object) -> float | None:
+def _float_or_none(value: Decimal | float | int | None) -> float | None:
     return None if value is None else float(value)
