@@ -57,7 +57,7 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
                 "INSERT INTO telegram_update_inbox "
                 "(update_id,telegram_user_id,payload_ciphertext,payload_hash,status,attempt_count) "
                 "VALUES (3001,980001,decode('010203','hex'),'a','pending',0),"
-                "(3002,980001,NULL,'b','completed',1)",
+                "(3002,980001,NULL,NULL,'completed',1)",
             )
         )
         asyncio.run(
@@ -70,13 +70,13 @@ def test_account_deletion_trigger_scrubs_active_and_terminal_telegram_identity()
         rows = asyncio.run(
             _rows(
                 engine,
-                "SELECT update_id,telegram_user_id,status,payload_ciphertext,last_error_code "
-                "FROM telegram_update_inbox ORDER BY update_id",
+                "SELECT update_id,telegram_user_id,status,payload_ciphertext,payload_hash,"
+                "last_error_code FROM telegram_update_inbox ORDER BY update_id",
             )
         )
         assert rows == [
-            (3001, None, "failed", None, "user_deleted"),
-            (3002, None, "completed", None, None),
+            (3001, None, "failed", None, None, "user_deleted"),
+            (3002, None, "completed", None, None, None),
         ]
     finally:
         asyncio.run(engine.dispose())
