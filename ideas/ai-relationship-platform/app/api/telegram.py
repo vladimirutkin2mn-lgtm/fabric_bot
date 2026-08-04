@@ -21,7 +21,7 @@ async def telegram_webhook(
         str | None, Header(alias="X-Telegram-Bot-Api-Secret-Token")
     ] = None,
 ) -> Response:
-    """Validate Telegram's secret header and feed one update to aiogram."""
+    """Validate Telegram's secret header and feed one bounded update to aiogram."""
     settings = cast(Settings, request.app.state.settings)
     if not settings.webhook_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -34,22 +34,29 @@ async def telegram_webhook(
     declared = request.headers.get("content-length")
     if declared is not None:
         try:
-            if int(declared) > max_bytes:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail="Payload too large",
-                )
+            declared_size = int(declared)
         except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request"
+            ) from None
+        if declared_size < 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request")
+        if declared_size > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Payload too large",
+            )
 
-    body = await request.body()
-    if len(body) > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Payload too large",
-        )
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Payload too large",
+            )
+        body.extend(chunk)
     try:
-        payload = json.loads(body)
+        payload = json.loads(bytes(body))
         bot = cast(Bot, request.app.state.telegram_bot)
         update = Update.model_validate(payload, context={"bot": bot})
     except (json.JSONDecodeError, ValidationError, TypeError):
