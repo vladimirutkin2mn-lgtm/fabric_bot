@@ -58,9 +58,7 @@ async def run(
             if worked:
                 continue
             try:
-                await asyncio.wait_for(
-                    stopped.wait(), timeout=runtime.telegram_worker_idle_seconds
-                )
+                await asyncio.wait_for(stopped.wait(), timeout=runtime.telegram_worker_idle_seconds)
             except TimeoutError:
                 pass
     finally:
