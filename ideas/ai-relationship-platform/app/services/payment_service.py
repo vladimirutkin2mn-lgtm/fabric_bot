@@ -242,7 +242,10 @@ class PaymentService:
         async with self._sessions.begin() as session:
             order = await session.scalar(
                 select(PaymentOrder)
-                .where(PaymentOrder.provider_checkout_id == event.checkout_id)
+                .where(
+                    PaymentOrder.provider_checkout_id == event.checkout_id,
+                    PaymentOrder.provider == event.provider,
+                )
                 .with_for_update()
             )
             if order is None:

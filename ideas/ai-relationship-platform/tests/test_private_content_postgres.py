@@ -1,12 +1,8 @@
 """PostgreSQL coverage for explicit encrypted-content ownership joins."""
 
-import os
-from collections.abc import AsyncIterator
-
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.base import Base
 from app.db.models import Analysis, User
 from app.repositories.private_content import AnalysisSource, EncryptedAnalysisContentRepository
 from app.services.sensitive_content import AESGCMSensitiveContentCipher
@@ -14,22 +10,10 @@ from app.services.sensitive_content import AESGCMSensitiveContentCipher
 pytestmark = pytest.mark.postgres
 
 
-@pytest.fixture
-async def private_sessions() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required for PostgreSQL integration tests")
-    engine = create_async_engine(url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
-        await connection.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
-
-
 async def test_explicit_source_and_result_joins_enforce_active_ownership(
-    private_sessions: async_sessionmaker[AsyncSession],
+    payment_db: async_sessionmaker[AsyncSession],
 ) -> None:
+    private_sessions = payment_db
     cipher = AESGCMSensitiveContentCipher("private-content-postgres-test-key-material")
     async with private_sessions.begin() as session:
         user = User(telegram_user_id=991001, first_name="Test")

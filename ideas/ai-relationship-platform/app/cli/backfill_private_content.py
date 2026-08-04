@@ -32,27 +32,19 @@ async def backfill_batch(
     after_id: UUID | None = None,
 ) -> tuple[int, int, UUID | None]:
     # Kept as a command-level function so operations can test and orchestrate bounded batches.
-    rows = list(
-        (
-            await session.scalars(
-                select(Analysis)
-                .where(
-                    or_(
-                        Analysis.normalized_conversation_json.is_not(None),
-                        Analysis.participants_json.is_not(None),
-                        Analysis.user_participant_label.is_not(None),
-                        Analysis.user_goal.is_not(None),
-                        Analysis.relationship_stage.is_not(None),
-                        Analysis.result_json.is_not(None),
-                    ),
-                    Analysis.id > after_id if after_id is not None else True,
-                )
-                .order_by(Analysis.id)
-                .limit(batch_size)
-                .with_for_update(skip_locked=True)
-            )
-        ).all()
+    legacy_content_predicate = or_(
+        Analysis.normalized_conversation_json.is_not(None),
+        Analysis.participants_json.is_not(None),
+        Analysis.user_participant_label.is_not(None),
+        Analysis.user_goal.is_not(None),
+        Analysis.relationship_stage.is_not(None),
+        Analysis.result_json.is_not(None),
     )
+    statement = select(Analysis).where(legacy_content_predicate)
+    if after_id is not None:
+        statement = statement.where(Analysis.id > after_id)
+    statement = statement.order_by(Analysis.id).limit(batch_size).with_for_update(skip_locked=True)
+    rows = list((await session.scalars(statement)).all())
     conflicts = 0
     for analysis in rows:
         private = await session.scalar(

@@ -74,6 +74,7 @@ class PaymentCompletionService:
             owner = await session.scalar(
                 select(PaymentOrder.id).where(
                     PaymentOrder.provider_payment_id == payment_id,
+                    PaymentOrder.provider == order.provider,
                     PaymentOrder.id != order.id,
                 )
             )
@@ -206,6 +207,7 @@ class PaymentCompletionService:
         owner = await session.scalar(
             select(PaymentOrder.id).where(
                 PaymentOrder.provider_payment_id == payment.payment_id,
+                PaymentOrder.provider == order.provider,
                 PaymentOrder.id != order.id,
             )
         )

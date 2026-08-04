@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -116,27 +116,37 @@ class DataDeletionService:
                 select(PaymentOrder.id).where(PaymentOrder.user_id == user_id)
             )
         )
-        provider_identifiers = list(
-            await self.session.scalars(
-                select(PaymentOrder.provider_checkout_id).where(
-                    PaymentOrder.user_id == user_id, PaymentOrder.provider_checkout_id.is_not(None)
+        checkout_pairs = list(
+            (
+                await self.session.execute(
+                    select(PaymentOrder.provider, PaymentOrder.provider_checkout_id).where(
+                        PaymentOrder.user_id == user_id,
+                        PaymentOrder.provider_checkout_id.is_not(None),
+                    )
                 )
-            )
+            ).tuples()
         )
-        provider_identifiers.extend(
-            await self.session.scalars(
-                select(PaymentOrder.provider_payment_id).where(
-                    PaymentOrder.user_id == user_id, PaymentOrder.provider_payment_id.is_not(None)
+        payment_pairs = list(
+            (
+                await self.session.execute(
+                    select(PaymentOrder.provider, PaymentOrder.provider_payment_id).where(
+                        PaymentOrder.user_id == user_id,
+                        PaymentOrder.provider_payment_id.is_not(None),
+                    )
                 )
-            )
+            ).tuples()
         )
+        provider_identifiers = checkout_pairs + payment_pairs
         webhook_ids: list[str] = []
         if provider_identifiers:
             webhook_ids = [
                 str(value)
                 for value in await self.session.scalars(
                     select(ProviderWebhookEvent.id).where(
-                        ProviderWebhookEvent.provider_object_id.in_(provider_identifiers)
+                        tuple_(
+                            ProviderWebhookEvent.provider,
+                            ProviderWebhookEvent.provider_object_id,
+                        ).in_(provider_identifiers)
                     )
                 )
             ]

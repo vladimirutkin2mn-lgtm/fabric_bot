@@ -17,6 +17,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.drop_constraint("payment_orders_provider_checkout_id_key", "payment_orders", type_="unique")
+    op.drop_constraint("payment_orders_provider_payment_id_key", "payment_orders", type_="unique")
+    op.create_unique_constraint(
+        "uq_payment_provider_checkout", "payment_orders", ["provider", "provider_checkout_id"]
+    )
+    op.create_unique_constraint(
+        "uq_payment_provider_payment", "payment_orders", ["provider", "provider_payment_id"]
+    )
     op.create_table(
         "analysis_private_content",
         sa.Column("analysis_id", sa.Uuid(), nullable=False),
@@ -71,7 +79,11 @@ def downgrade() -> None:
         sa.text(
             "SELECT EXISTS (SELECT 1 FROM users WHERE privacy_status = 'deleted') OR "
             "EXISTS (SELECT 1 FROM analysis_private_content "
-            "WHERE source_ciphertext IS NOT NULL OR result_ciphertext IS NOT NULL)"
+            "WHERE source_ciphertext IS NOT NULL OR result_ciphertext IS NOT NULL) OR "
+            "EXISTS (SELECT 1 FROM payment_orders WHERE provider_checkout_id IS NOT NULL "
+            "GROUP BY provider_checkout_id HAVING count(*) > 1) OR "
+            "EXISTS (SELECT 1 FROM payment_orders WHERE provider_payment_id IS NOT NULL "
+            "GROUP BY provider_payment_id HAVING count(*) > 1)"
         )
     )
     if incompatible:
@@ -79,6 +91,14 @@ def downgrade() -> None:
             "privacy migration downgrade refused: tombstones or encrypted-only reports exist; "
             "restore compatible identity/result data through an audited operation first"
         )
+    op.drop_constraint("uq_payment_provider_payment", "payment_orders", type_="unique")
+    op.drop_constraint("uq_payment_provider_checkout", "payment_orders", type_="unique")
+    op.create_unique_constraint(
+        "payment_orders_provider_payment_id_key", "payment_orders", ["provider_payment_id"]
+    )
+    op.create_unique_constraint(
+        "payment_orders_provider_checkout_id_key", "payment_orders", ["provider_checkout_id"]
+    )
     op.drop_constraint("ck_analyses_terminal_result", "analyses", type_="check")
     op.create_check_constraint(
         "ck_analyses_terminal_result",

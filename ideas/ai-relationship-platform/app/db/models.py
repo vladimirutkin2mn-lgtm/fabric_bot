@@ -223,6 +223,8 @@ class PaymentOrder(Base):
 
     __tablename__ = "payment_orders"
     __table_args__ = (
+        UniqueConstraint("provider", "provider_checkout_id", name="uq_payment_provider_checkout"),
+        UniqueConstraint("provider", "provider_payment_id", name="uq_payment_provider_payment"),
         CheckConstraint(
             "status IN ('creating','pending','completed','failed','cancelled','manual_review')",
             name="ck_payment_orders_status",
@@ -262,8 +264,8 @@ class PaymentOrder(Base):
     checkout_started_emitted: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
-    provider_checkout_id: Mapped[str | None] = mapped_column(String(255), unique=True)
-    provider_payment_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    provider_checkout_id: Mapped[str | None] = mapped_column(String(255))
+    provider_payment_id: Mapped[str | None] = mapped_column(String(255))
     provider_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     mode: Mapped[str] = mapped_column(String(32), default="one_time", server_default="one_time")
     market: Mapped[str] = mapped_column(String(32), default="RU", server_default="RU")
