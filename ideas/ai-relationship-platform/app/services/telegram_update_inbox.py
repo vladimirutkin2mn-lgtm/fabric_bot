@@ -77,6 +77,7 @@ class TelegramUpdateInboxService:
     ) -> TelegramAcceptResult:
         digest = self.payload_hash(payload)
         ciphertext = self._cipher.encrypt_json(ContentPurpose.TELEGRAM_UPDATE, payload)
+        accepted_at = datetime.now(UTC)
         async with self._sessions.begin() as session:
             inserted = await session.scalar(
                 insert(TelegramUpdateInbox)
@@ -87,6 +88,7 @@ class TelegramUpdateInboxService:
                     payload_hash=digest,
                     status="pending",
                     attempt_count=0,
+                    available_at=accepted_at,
                 )
                 .on_conflict_do_nothing(index_elements=["update_id"])
                 .returning(TelegramUpdateInbox.update_id)
