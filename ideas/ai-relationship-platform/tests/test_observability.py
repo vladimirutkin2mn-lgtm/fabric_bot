@@ -1,7 +1,7 @@
 """Unit coverage for privacy-safe observability boundaries."""
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
