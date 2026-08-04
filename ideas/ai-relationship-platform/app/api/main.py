@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -12,7 +12,7 @@ from app.api.health import router as health_router
 from app.api.payments import router as payments_router
 from app.api.telegram import router as telegram_router
 from app.api.webhooks import router as webhooks_router
-from app.bot.main import close_dispatcher, configure_webhook, create_dispatcher
+from app.bot.main import configure_webhook
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
 from app.deployment import (
@@ -32,6 +32,8 @@ from app.services.admin_metrics import AdminMetricsService
 from app.services.checkout_service import CheckoutService
 from app.services.payment_completion_service import PaymentCompletionService
 from app.services.payment_service import PaymentService
+from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
+from app.services.telegram_update_inbox import TelegramUpdateInboxService
 from app.services.webhook_inbox_service import WebhookInboxService
 
 
@@ -41,7 +43,6 @@ def create_app(
     observability_settings: ObservabilitySettings | None = None,
     deployment_settings: DeploymentSettings | None = None,
     telegram_bot: Bot | None = None,
-    telegram_dispatcher: Dispatcher | None = None,
     register_telegram_webhook: bool = True,
 ) -> FastAPI:
     """Build an application with injectable configuration and database engine."""
@@ -60,21 +61,26 @@ def create_app(
     )
 
     resolved_bot: Bot | None = None
-    resolved_dispatcher: Dispatcher | None = None
+    telegram_inbox: TelegramUpdateInboxService | None = None
     owns_bot = False
-    owns_dispatcher = False
     if resolved_settings.webhook_enabled:
         validate_telegram_webhook(resolved_settings)
         resolved_bot = telegram_bot or Bot(
             token=resolved_settings.telegram_bot_token.get_secret_value()
         )
         owns_bot = telegram_bot is None
-        resolved_dispatcher = telegram_dispatcher or create_dispatcher(
-            resolved_settings,
-            resolved_observability,
-            resolved_engine,
+        cipher = AESGCMSensitiveContentCipher(
+            decode_configured_key(
+                resolved_settings.content_encryption_key.get_secret_value()
+            )
         )
-        owns_dispatcher = telegram_dispatcher is None
+        telegram_inbox = TelegramUpdateInboxService(
+            sessions,
+            cipher,
+            lease_seconds=resolved_deployment.telegram_update_lease_seconds,
+            retry_base_seconds=resolved_deployment.telegram_update_retry_base_seconds,
+            max_attempts=resolved_deployment.telegram_update_max_attempts,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -88,8 +94,6 @@ def create_app(
                 await configure_webhook(resolved_bot, resolved_settings)
             yield
         finally:
-            if owns_dispatcher and resolved_dispatcher is not None:
-                await close_dispatcher(resolved_dispatcher)
             if owns_bot and resolved_bot is not None:
                 await resolved_bot.session.close()
             await resolved_engine.dispose()
@@ -129,9 +133,9 @@ def create_app(
     application.include_router(admin_router)
     application.include_router(payments_router)
     application.include_router(webhooks_router)
-    if resolved_bot is not None and resolved_dispatcher is not None:
+    if resolved_bot is not None and telegram_inbox is not None:
         application.state.telegram_bot = resolved_bot
-        application.state.telegram_dispatcher = resolved_dispatcher
+        application.state.telegram_update_inbox = telegram_inbox
         application.state.telegram_webhook_max_bytes = (
             resolved_deployment.telegram_webhook_max_bytes
         )
