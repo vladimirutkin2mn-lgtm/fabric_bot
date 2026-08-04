@@ -106,7 +106,7 @@ class PostgresFSMStorage(BaseStorage):
         statement = select(TelegramFSMState).where(*_matches(key))
         if for_update:
             statement = statement.with_for_update()
-        return await session.scalar(statement)
+        return cast(TelegramFSMState | None, await session.scalar(statement))
 
     def _decode_data(self, row: TelegramFSMState | None) -> dict[str, Any]:
         if row is None or row.data_ciphertext is None:
