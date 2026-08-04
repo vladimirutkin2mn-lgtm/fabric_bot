@@ -40,9 +40,7 @@ class TelegramUpdateWorker:
             raise
         except Exception:
             logger.exception("telegram_update_failed update_id=%s", claim.update_id)
-            await self._inbox.retry(
-                claim.update_id, claim.claim_id, "unexpected_handler_error"
-            )
+            await self._inbox.retry(claim.update_id, claim.claim_id, "unexpected_handler_error")
             return True
         await self._inbox.complete(claim.update_id, claim.claim_id)
         return True
