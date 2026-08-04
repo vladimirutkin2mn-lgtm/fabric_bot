@@ -107,9 +107,7 @@ _EVENT_PROPERTIES: dict[str, frozenset[str]] = {
     ),
     "analysis_feedback_submitted": frozenset({"analysis_id", "score"}),
     "analysis_history_opened": frozenset({"analysis_id"}),
-    "analysis_report_delivered": frozenset(
-        {"analysis_id", "source", "chunk_count_bucket"}
-    ),
+    "analysis_report_delivered": frozenset({"analysis_id", "source", "chunk_count_bucket"}),
     "reply_suggestions_requested": frozenset({"analysis_id"}),
     "followup_requested": frozenset({"analysis_id"}),
     "analysis_deleted": frozenset({"analysis_id"}),
