@@ -68,3 +68,6 @@ jobs:
 
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet
+
+      - name: Build production image
+        run: docker build --tag heartsignal:ci .

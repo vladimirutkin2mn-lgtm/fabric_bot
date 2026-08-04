@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.bot.dependencies import OnboardingDependencyMiddleware
 from app.bot.handlers import router
@@ -26,15 +27,17 @@ logger = logging.getLogger(__name__)
 
 
 def create_dispatcher(
-    settings: Settings, observability_settings: ObservabilitySettings | None = None
+    settings: Settings,
+    observability_settings: ObservabilitySettings | None = None,
+    engine: AsyncEngine | None = None,
 ) -> Dispatcher:
     """Create a dispatcher with explicit, per-update dependencies."""
     resolved_observability = observability_settings or get_observability_settings()
+    resolved_engine = engine or create_engine(str(settings.database_url))
     dispatcher = Dispatcher()
-    engine = create_engine(str(settings.database_url))
     llm = create_llm_client(settings)
     payments = create_payment_components(settings)
-    sessions = create_session_factory(engine)
+    sessions = create_session_factory(resolved_engine)
     product_catalog = ProductCatalog(settings)
     analytics = create_analytics_client(sessions, resolved_observability)
     reporter = (
@@ -57,11 +60,22 @@ def create_dispatcher(
     dispatcher.update.outer_middleware(TelegramObservabilityMiddleware(reporter))
     dispatcher.update.outer_middleware(dependency_middleware)
     dispatcher.include_router(router)
-    dispatcher["database_engine"] = engine
+    dispatcher["database_engine"] = resolved_engine
+    dispatcher["owns_database_engine"] = engine is None
     dispatcher["llm_client"] = llm
     dispatcher["analytics"] = analytics
     dispatcher["error_reporter"] = reporter
     return dispatcher
+
+
+async def close_dispatcher(dispatcher: Dispatcher) -> None:
+    """Close provider resources and only engines owned by this dispatcher."""
+    try:
+        await close_llm_client(dispatcher["llm_client"])
+    except Exception:
+        logger.warning("LLM client shutdown failed")
+    if dispatcher["owns_database_engine"]:
+        await dispatcher["database_engine"].dispose()
 
 
 async def configure_webhook(bot: Bot, settings: Settings) -> None:
@@ -69,6 +83,7 @@ async def configure_webhook(bot: Bot, settings: Settings) -> None:
     await bot.set_webhook(
         url=settings.telegram_webhook_url,
         secret_token=settings.telegram_webhook_secret.get_secret_value(),
+        allowed_updates=["message", "callback_query"],
     )
 
 
@@ -88,11 +103,7 @@ async def run(settings: Settings | None = None) -> None:
             await dispatcher.start_polling(bot)
     finally:
         try:
-            await close_llm_client(dispatcher["llm_client"])
-        except Exception:
-            logger.warning("LLM client shutdown failed")
-        try:
-            await dispatcher["database_engine"].dispose()
+            await close_dispatcher(dispatcher)
         finally:
             await bot.session.close()
 
