@@ -553,7 +553,7 @@ class SubscriptionLifecycleService:
                 assert subscription.current_period_end is not None
                 boundary = _aware_utc(subscription.current_period_end)
                 key = f"subscription:renewal:{subscription.id}:{boundary.isoformat()}"
-                result = await session.execute(
+                inserted_id = await session.scalar(
                     pg_insert(BillingJob)
                     .values(
                         job_type="subscription_renewal",
@@ -565,8 +565,9 @@ class SubscriptionLifecycleService:
                         available_at=max(current, boundary),
                     )
                     .on_conflict_do_nothing(index_elements=["idempotency_key"])
+                    .returning(BillingJob.id)
                 )
-                if result.rowcount:
+                if inserted_id is not None:
                     created += 1
         return created
 
