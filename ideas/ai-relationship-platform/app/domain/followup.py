@@ -67,12 +67,15 @@ def validate_followup_semantics(answer: FollowUpAnswer, report: AnalysisResult) 
     if len(answer.report_refs) != len(set(answer.report_refs)):
         issues.append("report_refs:duplicate_reference")
     for reference in answer.report_refs:
-        if not re.fullmatch(
-            r"(summary|dynamic|reciprocity_score|safety|observations\.[0-9]+|"
-            r"hypotheses\.[0-9]+|unknowns\.[0-9]+|next_actions\.[0-9]+|"
-            r"reply_suggestions\.[0-9]+)",
-            reference,
-        ) or reference not in allowed:
+        if (
+            not re.fullmatch(
+                r"(summary|dynamic|reciprocity_score|safety|observations\.[0-9]+|"
+                r"hypotheses\.[0-9]+|unknowns\.[0-9]+|next_actions\.[0-9]+|"
+                r"reply_suggestions\.[0-9]+)",
+                reference,
+            )
+            or reference not in allowed
+        ):
             issues.append("report_refs:invalid_reference")
     if report.safety.high_risk_detected and not answer.safety.high_risk_detected:
         issues.append("safety:high_risk_downgrade")
