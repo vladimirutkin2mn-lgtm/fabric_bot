@@ -39,6 +39,7 @@ class HostedSubscriptionCheckout:
 @dataclass(frozen=True)
 class PaidSubscriptionFact:
     user_id: UUID
+    initial_order_id: UUID
     provider: str
     provider_customer_id: str
     provider_subscription_id: str
