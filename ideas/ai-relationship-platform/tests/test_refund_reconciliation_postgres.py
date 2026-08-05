@@ -61,7 +61,7 @@ class FakeRefundGateway:
     async def create_refund(self, request: CreateRefund) -> AuthoritativeRefund:
         self.create_calls += 1
         assert request.provider_payment_id == self.payment_id
-        assert request.amount_minor == self.amount_minor
+        assert request.amount_minor == 1_000
         return self.fact()
 
     async def fetch_refund(self, refund_id: str) -> AuthoritativeRefund:
