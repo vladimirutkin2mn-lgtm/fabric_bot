@@ -151,10 +151,7 @@ async def test_concurrent_requests_make_one_llm_call_and_consume_once(
     followups = service(followup_db, llm)
     results = await asyncio.wait_for(
         asyncio.gather(
-            *(
-                followups.ask(analysis_id, user_id, "Что мне написать дальше?")
-                for _ in range(10)
-            )
+            *(followups.ask(analysis_id, user_id, "Что мне написать дальше?") for _ in range(10))
         ),
         timeout=10,
     )
