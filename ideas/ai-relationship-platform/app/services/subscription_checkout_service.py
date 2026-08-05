@@ -214,7 +214,7 @@ class SubscriptionCheckoutService:
             if job is None:
                 session.add(
                     BillingJob(
-                        job_type="subscription_checkout_reconciliation",
+                        job_type="subscription_checkout_reconcile",
                         provider=provider,
                         object_type="payment_order",
                         object_id=str(order_id),
