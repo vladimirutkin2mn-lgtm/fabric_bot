@@ -97,7 +97,7 @@ class RefundReconciliationService:
             job = await session.scalar(
                 select(BillingJob).where(BillingJob.id == job_id).with_for_update()
             )
-            if not self._owns_claim(job, claim_id):
+            if job is None or not self._owns_claim(job, claim_id):
                 return "claim_lost"
             if user is None or order is None or refund is None or reservation is None:
                 return self._manual_locked(job, refund, "refund_state_missing")
@@ -201,7 +201,7 @@ class RefundReconciliationService:
             job = await session.scalar(
                 select(BillingJob).where(BillingJob.id == job_id).with_for_update()
             )
-            if not self._owns_claim(job, claim_id):
+            if job is None or not self._owns_claim(job, claim_id):
                 return "claim_lost"
             return self._complete_locked(job, refund.status)
 
@@ -210,19 +210,19 @@ class RefundReconciliationService:
             job = await session.scalar(
                 select(BillingJob).where(BillingJob.id == job_id).with_for_update()
             )
-            if not self._owns_claim(job, claim_id):
+            if job is None or not self._owns_claim(job, claim_id):
                 return "claim_lost"
             job.status = "manual_review"
             job.last_error_code = code or "refund_manual_review"
+            job.claimed_by = None
             job.claim_id = None
             job.lease_until = None
             return "manual_review"
 
     @staticmethod
-    def _owns_claim(job: BillingJob | None, claim_id: UUID) -> bool:
+    def _owns_claim(job: BillingJob, claim_id: UUID) -> bool:
         return bool(
-            job is not None
-            and job.status == "claimed"
+            job.status == "claimed"
             and job.claim_id == claim_id
             and job.lease_until is not None
             and job.lease_until > datetime.now(UTC)
