@@ -156,10 +156,17 @@ async def test_concurrent_requests_make_one_llm_call_and_consume_once(
         asyncio.create_task(followups.ask(analysis_id, user_id, "Что мне написать дальше?"))
         for _ in range(10)
     ]
-    await llm.started.wait()
-    await asyncio.sleep(0.05)
-    llm.release.set()
-    results = await asyncio.gather(*tasks)
+    try:
+        await asyncio.wait_for(llm.started.wait(), timeout=5)
+        await asyncio.sleep(0.05)
+        llm.release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+    finally:
+        llm.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     assert llm.calls == 1
     assert {item.status for item in results} <= {
