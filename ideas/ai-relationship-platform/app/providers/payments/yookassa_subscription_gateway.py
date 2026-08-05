@@ -11,7 +11,6 @@ from app.providers.payments.base import PermanentProviderError
 from app.providers.payments.subscription_gateway import (
     CreateSubscriptionCheckout,
     HostedSubscriptionCheckout,
-    MerchantManagedSubscriptionGateway,
     RenewSubscription,
     SubscriptionProviderFact,
     SubscriptionStateFact,
@@ -20,7 +19,7 @@ from app.providers.payments.subscription_gateway import (
 from app.providers.payments.yookassa_gateway import YooKassaGateway
 
 
-class YooKassaSubscriptionGateway(MerchantManagedSubscriptionGateway):
+class YooKassaSubscriptionGateway:
     """Build deterministic renewals from durable state; delegate provider I/O."""
 
     def __init__(
@@ -64,14 +63,9 @@ class YooKassaSubscriptionGateway(MerchantManagedSubscriptionGateway):
             if order is None:
                 raise PermanentProviderError("subscription_order_missing")
             current_period_end = subscription.current_period_end.astimezone(UTC)
-            if current_period_end > datetime.now(UTC):
-                if not order.provider_payment_id:
-                    raise PermanentProviderError("subscription_payment_missing")
-                return await self._gateway.fetch_subscription_event(
-                    "payment.reconciliation", order.provider_payment_id
-                )
-            snapshot = order.commercial_snapshot
-            request = RenewSubscription(
+            provider_payment_id = order.provider_payment_id
+            snapshot = dict(order.commercial_snapshot)
+            renewal = RenewSubscription(
                 user_id=subscription.user_id,
                 subscription_id=subscription.id,
                 provider_subscription_id=subscription.provider_subscription_id,
@@ -92,7 +86,13 @@ class YooKassaSubscriptionGateway(MerchantManagedSubscriptionGateway):
                 encrypted_payment_method=subscription.encrypted_payment_method,
                 receipt_contact=self._settings.yookassa_receipt_email or None,
             )
-        return await self.renew_subscription(request)
+        if current_period_end > datetime.now(UTC):
+            if not provider_payment_id:
+                raise PermanentProviderError("subscription_payment_missing")
+            return await self._gateway.fetch_subscription_event(
+                "payment.reconciliation", provider_payment_id
+            )
+        return await self.renew_subscription(renewal)
 
     async def cancel_subscription(self, subscription_id: str) -> SubscriptionStateFact:
         return await self._state(subscription_id, cancel_at_period_end=True)
