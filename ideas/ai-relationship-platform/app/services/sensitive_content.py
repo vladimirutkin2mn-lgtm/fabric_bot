@@ -20,6 +20,8 @@ class ContentPurpose(StrEnum):
     TELEGRAM_UPDATE = "telegram-update"
     TELEGRAM_FSM_DATA = "telegram-fsm-data"
     PAYMENT_METHOD = "payment-method"
+    FOLLOW_UP_QUESTION = "follow-up-question"
+    FOLLOW_UP_ANSWER = "follow-up-answer"
 
 
 class SensitiveContentError(ValueError):
