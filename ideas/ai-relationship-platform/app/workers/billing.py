@@ -36,9 +36,7 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
     subscription_gateways = {
         name.value: gateway for name, gateway in components.subscription_gateways.items()
     }
-    refund_gateways = {
-        name.value: gateway for name, gateway in components.refund_gateways.items()
-    }
+    refund_gateways = {name.value: gateway for name, gateway in components.refund_gateways.items()}
     if resolved.yookassa_recurring_enabled:
         yookassa = components.subscription_gateways.get(PaymentProviderName.YOOKASSA)
         if not isinstance(yookassa, YooKassaGateway):
