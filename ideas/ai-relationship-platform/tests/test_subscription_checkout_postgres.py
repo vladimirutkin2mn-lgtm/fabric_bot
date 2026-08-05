@@ -159,5 +159,5 @@ async def test_unknown_checkout_creates_one_durable_reconciliation_job(
     async with payment_db() as session:
         job = await session.scalar(select(BillingJob))
         assert job is not None
-        assert job.job_type == "subscription_checkout_reconciliation"
+        assert job.job_type == "subscription_checkout_reconcile"
         assert await session.scalar(select(func.count()).select_from(BillingJob)) == 1
