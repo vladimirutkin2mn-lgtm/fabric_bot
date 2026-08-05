@@ -163,9 +163,9 @@ async def ledger_refund_count(sessions: async_sessionmaker[AsyncSession]) -> int
     async with sessions() as session:
         return int(
             await session.scalar(
-                select(func.count()).select_from(CreditTransaction).where(
-                    CreditTransaction.type == "purchase_refund"
-                )
+                select(func.count())
+                .select_from(CreditTransaction)
+                .where(CreditTransaction.type == "purchase_refund")
             )
             or 0
         )
@@ -184,14 +184,10 @@ async def test_success_consumes_reservation_and_posts_one_negative_ledger_entry(
     async with refund_db() as session:
         refund = await session.get(RefundRequest, refund_id)
         reservation = await session.scalar(
-            select(CreditReservation).where(
-                CreditReservation.refund_request_id == refund_id
-            )
+            select(CreditReservation).where(CreditReservation.refund_request_id == refund_id)
         )
         ledger = await session.scalar(
-            select(CreditTransaction).where(
-                CreditTransaction.refund_request_id == refund_id
-            )
+            select(CreditTransaction).where(CreditTransaction.refund_request_id == refund_id)
         )
         purchase = await session.scalar(
             select(CreditTransaction).where(
@@ -219,9 +215,7 @@ async def test_authoritative_failure_releases_credits_without_ledger_entry(
     async with refund_db() as session:
         refund = await session.get(RefundRequest, refund_id)
         reservation = await session.scalar(
-            select(CreditReservation).where(
-                CreditReservation.refund_request_id == refund_id
-            )
+            select(CreditReservation).where(CreditReservation.refund_request_id == refund_id)
         )
         balance = int(
             await session.scalar(
@@ -248,9 +242,7 @@ async def test_pending_refund_reuses_provider_identity_then_completes(
     assert await jobs.run_once("worker-1")
     async with refund_db.begin() as session:
         refund = await session.get(RefundRequest, refund_id)
-        job = await session.scalar(
-            select(BillingJob).where(BillingJob.object_id == str(refund_id))
-        )
+        job = await session.scalar(select(BillingJob).where(BillingJob.object_id == str(refund_id)))
         assert refund is not None and refund.status == "provider_pending"
         assert refund.provider_refund_id == gateway.refund_id
         assert job is not None and job.status == "pending"
@@ -279,13 +271,9 @@ async def test_provider_amount_mismatch_keeps_reservation_for_manual_review(
     async with refund_db() as session:
         refund = await session.get(RefundRequest, refund_id)
         reservation = await session.scalar(
-            select(CreditReservation).where(
-                CreditReservation.refund_request_id == refund_id
-            )
+            select(CreditReservation).where(CreditReservation.refund_request_id == refund_id)
         )
-        job = await session.scalar(
-            select(BillingJob).where(BillingJob.object_id == str(refund_id))
-        )
+        job = await session.scalar(select(BillingJob).where(BillingJob.object_id == str(refund_id)))
         assert refund is not None and refund.status == "manual_review"
         assert refund.failure_code == "refund_amount_mismatch"
         assert reservation is not None and reservation.status == "active"
