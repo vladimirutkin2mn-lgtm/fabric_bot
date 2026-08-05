@@ -100,7 +100,9 @@ async def _current_user_subscription(
     subscriptions: SubscriptionManagementService | None,
 ) -> tuple[object | None, SubscriptionView | None]:
     user = await onboarding.current_user(callback.from_user.id)
-    current = None if user is None or subscriptions is None else await subscriptions.current(user.id)
+    current = (
+        None if user is None or subscriptions is None else await subscriptions.current(user.id)
+    )
     return user, current
 
 
@@ -208,9 +210,7 @@ async def create_subscription_checkout(
         await callback.message.answer("Подписка сейчас недоступна. Попробуйте позже.")
         return
     if result.url is None:
-        await callback.message.answer(
-            "Подписка создаётся. Обновите статус через несколько секунд."
-        )
+        await callback.message.answer("Подписка создаётся. Обновите статус через несколько секунд.")
         return
     await callback.message.answer(
         "Stripe покажет сумму, период и условия автопродления до подтверждения оплаты.",
