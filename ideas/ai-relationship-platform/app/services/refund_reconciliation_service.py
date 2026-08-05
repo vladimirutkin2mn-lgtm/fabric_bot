@@ -87,9 +87,7 @@ class RefundReconciliationService:
                 select(PaymentOrder).where(PaymentOrder.id == order_id).with_for_update()
             )
             refund = await session.scalar(
-                select(RefundRequest)
-                .where(RefundRequest.id == refund_request_id)
-                .with_for_update()
+                select(RefundRequest).where(RefundRequest.id == refund_request_id).with_for_update()
             )
             reservation = await session.scalar(
                 select(CreditReservation)
@@ -154,9 +152,7 @@ class RefundReconciliationService:
             if purchase is None:
                 return self._manual_locked(job, refund, "purchase_transaction_missing")
             existing = await session.scalar(
-                select(CreditTransaction).where(
-                    CreditTransaction.refund_request_id == refund.id
-                )
+                select(CreditTransaction).where(CreditTransaction.refund_request_id == refund.id)
             )
             if existing is not None:
                 if (
@@ -209,9 +205,7 @@ class RefundReconciliationService:
                 return "claim_lost"
             return self._complete_locked(job, refund.status)
 
-    async def _mark_job_manual(
-        self, job_id: UUID, claim_id: UUID, code: str | None
-    ) -> str:
+    async def _mark_job_manual(self, job_id: UUID, claim_id: UUID, code: str | None) -> str:
         async with self._sessions.begin() as session:
             job = await session.scalar(
                 select(BillingJob).where(BillingJob.id == job_id).with_for_update()
@@ -240,7 +234,10 @@ class RefundReconciliationService:
         refund: RefundRequest,
         fact: AuthoritativeRefund,
     ) -> str | None:
-        if fact.provider != refund.provider or fact.provider_payment_id != order.provider_payment_id:
+        if (
+            fact.provider != refund.provider
+            or fact.provider_payment_id != order.provider_payment_id
+        ):
             return "refund_payment_mismatch"
         if fact.amount_minor != refund.amount_minor or fact.currency != refund.currency:
             return "refund_amount_mismatch"
