@@ -141,16 +141,27 @@ async def yookassa_webhook(request: Request) -> dict[str, str]:
         raise HTTPException(403, "invalid source")
     try:
         value = json.loads(body)
-        event_type = str(value["event"])
+        provider_event_type = str(value["event"])
         obj = value["object"]
         object_id = str(obj["id"])
+        metadata = obj.get("metadata", {}) if isinstance(obj, dict) else {}
         if not object_id:
             raise ValueError
     except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         raise HTTPException(400, "malformed event") from None
-    if event_type not in YOOKASSA_PAYMENT_EVENTS:
+    if provider_event_type not in YOOKASSA_PAYMENT_EVENTS:
         return {"status": "ignored"}
-    event_id = hashlib.sha256(f"yookassa:{event_type}:{object_id}".encode()).hexdigest()
+    subscription = isinstance(metadata, dict) and metadata.get("billing_mode") == "subscription"
+    event_type = provider_event_type
+    if subscription:
+        event_type = (
+            "invoice.paid"
+            if provider_event_type == "payment.succeeded"
+            else "invoice.payment_failed"
+        )
+    event_id = hashlib.sha256(
+        f"yookassa:{provider_event_type}:{object_id}".encode()
+    ).hexdigest()
     await request.app.state.webhook_inbox.accept(
         "yookassa", event_id, event_type, object_id, hashlib.sha256(body).hexdigest()
     )
