@@ -114,9 +114,7 @@ class YooKassaGateway:
             "description": f"HeartSignal: {request.product_code}"[:128],
             "metadata": metadata,
         }
-        receipt = self._receipt(
-            request.product_code, request.amount_minor, request.receipt_contact
-        )
+        receipt = self._receipt(request.product_code, request.amount_minor, request.receipt_contact)
         if receipt is not None:
             payload["receipt"] = receipt
         value, _ = await self._post_payment(payload, request.idempotency_key)
@@ -156,9 +154,7 @@ class YooKassaGateway:
             "description": f"HeartSignal: {request.product_code}"[:128],
             "metadata": metadata,
         }
-        receipt = self._receipt(
-            request.product_code, request.amount_minor, request.receipt_contact
-        )
+        receipt = self._receipt(request.product_code, request.amount_minor, request.receipt_contact)
         if receipt is not None:
             payload["receipt"] = receipt
         value, _ = await self._post_payment(payload, request.idempotency_key)
@@ -334,7 +330,9 @@ class YooKassaGateway:
         if value is None or self._payment_method_cipher is None:
             raise PermanentProviderError("saved_payment_method_missing")
         try:
-            decrypted = self._payment_method_cipher.decrypt_json(ContentPurpose.PAYMENT_METHOD, value)
+            decrypted = self._payment_method_cipher.decrypt_json(
+                ContentPurpose.PAYMENT_METHOD, value
+            )
         except SensitiveContentError as exc:
             raise PermanentProviderError("saved_payment_method_invalid") from exc
         if not isinstance(decrypted, dict):
