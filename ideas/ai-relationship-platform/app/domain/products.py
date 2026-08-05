@@ -1,4 +1,5 @@
 """Server-owned product catalog; callbacks and webhooks never define value."""
+# ruff: noqa: RUF001
 
 from dataclasses import dataclass
 from enum import StrEnum
