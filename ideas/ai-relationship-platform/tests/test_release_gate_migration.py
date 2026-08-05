@@ -1,4 +1,4 @@
-"""Migration safety for subscription checkout reconciliation jobs."""
+"""PostgreSQL migration safety for append-only release gate evidence."""
 
 import asyncio
 import os
@@ -8,12 +8,12 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
 _HEAD = "20260805_16"
-_PARENT = "20260805_12"
-_JOB_TYPE = "subscription_checkout_reconcile"
+_PARENT = "20260805_15"
 
 
 async def _execute(url: str, schema: str, statement: str) -> None:
@@ -29,10 +29,7 @@ async def _scalar(url: str, schema: str, statement: str) -> object | None:
     engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
     try:
         async with engine.connect() as connection:
-            return cast(
-                object | None,
-                await connection.scalar(text(statement)),
-            )
+            return cast(object | None, await connection.scalar(text(statement)))
     finally:
         await engine.dispose()
 
@@ -56,50 +53,68 @@ def _environment(url: str, schema: str) -> dict[str, str]:
 
 
 def _schema(url: str) -> str:
-    schema = f"subscription_job_{uuid4().hex}"
+    schema = f"release_gate_{uuid4().hex}"
     asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
     return schema
 
 
-def _insert_job(url: str, schema: str) -> None:
+def _insert_attestation(url: str, schema: str) -> str:
+    attestation_id = str(uuid4())
     asyncio.run(
         _execute(
             url,
             schema,
-            "INSERT INTO billing_jobs "
-            "(id,job_type,provider,object_type,object_id,idempotency_key,status) VALUES "
-            f"('{uuid4()}','{_JOB_TYPE}','stripe','payment_order','order-migration',"
-            f"'subscription-job-{uuid4()}','pending')",
+            "INSERT INTO release_gate_attestations "
+            "(id,gate_name,status,checklist_version,app_env,code_sha,schema_revision,evidence_ref) "
+            f"VALUES ('{attestation_id}','stripe_subscription_sandbox','passed','m5-live-v1',"
+            "'staging','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','20260805_16','staging/run-1')",
         )
     )
+    return attestation_id
 
 
-def test_subscription_job_constraint_round_trip_when_empty() -> None:
+def test_release_gate_migration_round_trip_when_empty() -> None:
     url = _database_url()
     schema = _schema(url)
     environment = _environment(url, schema)
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _HEAD
-        _insert_job(url, schema)
-        asyncio.run(_execute(url, schema, "DELETE FROM billing_jobs"))
         subprocess.run(("alembic", "downgrade", _PARENT), check=True, env=environment)
         assert (
             asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _PARENT
         )
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        _insert_job(url, schema)
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
 
-def test_subscription_job_downgrade_refuses_live_reconciliation_state() -> None:
+def test_release_gate_rows_are_immutable_and_block_downgrade() -> None:
     url = _database_url()
     schema = _schema(url)
     environment = _environment(url, schema)
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        _insert_job(url, schema)
+        attestation_id = _insert_attestation(url, schema)
+        with pytest.raises(DBAPIError, match="append-only"):
+            asyncio.run(
+                _execute(
+                    url,
+                    schema,
+                    "UPDATE release_gate_attestations SET status='failed' "
+                    f"WHERE id='{attestation_id}'",
+                )
+            )
+        assert (
+            asyncio.run(
+                _scalar(
+                    url,
+                    schema,
+                    f"SELECT status FROM release_gate_attestations WHERE id='{attestation_id}'",
+                )
+            )
+            == "passed"
+        )
         failed = subprocess.run(
             ("alembic", "downgrade", _PARENT),
             env=environment,
@@ -109,6 +124,5 @@ def test_subscription_job_downgrade_refuses_live_reconciliation_state() -> None:
         assert failed.returncode != 0
         assert "downgrade refused" in failed.stderr
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _HEAD
-        assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM billing_jobs")) == 1
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
