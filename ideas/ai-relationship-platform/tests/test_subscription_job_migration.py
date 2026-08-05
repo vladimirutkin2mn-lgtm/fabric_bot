@@ -67,8 +67,8 @@ def _insert_job(url: str, schema: str) -> None:
             url,
             schema,
             "INSERT INTO billing_jobs "
-            "(job_type,provider,object_type,object_id,idempotency_key,status) VALUES "
-            f"('{_JOB_TYPE}','stripe','payment_order','order-migration',"
+            "(id,job_type,provider,object_type,object_id,idempotency_key,status) VALUES "
+            f"('{uuid4()}','{_JOB_TYPE}','stripe','payment_order','order-migration',"
             f"'subscription-job-{uuid4()}','pending')",
         )
     )
