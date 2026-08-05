@@ -52,6 +52,7 @@ class SubscriptionEventProcessor:
                     period_end=fact.period_end,
                     paid_at=fact.paid_at,
                     consent_version=fact.consent_version,
+                    initial_order_id=fact.initial_order_id,
                     live_mode=fact.live_mode,
                 ),
             )
