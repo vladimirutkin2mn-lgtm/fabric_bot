@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.bot.dependencies import OnboardingDependencyMiddleware
 from app.bot.handlers import router
 from app.bot.observability import TelegramObservabilityMiddleware
+from app.bot.postgres_fsm import PostgresEventIsolation, PostgresFSMStorage
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
@@ -22,6 +23,7 @@ from app.providers.llm.base import close_llm_client
 from app.providers.llm.factory import create_llm_client
 from app.providers.payments.composition import create_payment_components
 from app.services.checkout_service import CheckoutService
+from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +33,19 @@ def create_dispatcher(
     observability_settings: ObservabilitySettings | None = None,
     engine: AsyncEngine | None = None,
 ) -> Dispatcher:
-    """Create a dispatcher with explicit, per-update dependencies."""
+    """Create a dispatcher with durable FSM and explicit per-update dependencies."""
     resolved_observability = observability_settings or get_observability_settings()
     resolved_engine = engine or create_engine(str(settings.database_url))
-    dispatcher = Dispatcher()
+    sessions = create_session_factory(resolved_engine)
+    cipher = AESGCMSensitiveContentCipher(
+        decode_configured_key(settings.content_encryption_key.get_secret_value())
+    )
+    dispatcher = Dispatcher(
+        storage=PostgresFSMStorage(sessions, cipher),
+        events_isolation=PostgresEventIsolation(resolved_engine),
+    )
     llm = create_llm_client(settings)
     payments = create_payment_components(settings)
-    sessions = create_session_factory(resolved_engine)
     product_catalog = ProductCatalog(settings)
     analytics = create_analytics_client(sessions, resolved_observability)
     reporter = (
@@ -69,11 +77,12 @@ def create_dispatcher(
 
 
 async def close_dispatcher(dispatcher: Dispatcher) -> None:
-    """Close provider resources and only engines owned by this dispatcher."""
+    """Close provider/FSM resources and only engines owned by this dispatcher."""
     try:
         await close_llm_client(dispatcher["llm_client"])
     except Exception:
         logger.warning("LLM client shutdown failed")
+    await dispatcher.fsm.close()
     if dispatcher["owns_database_engine"]:
         await dispatcher["database_engine"].dispose()
 

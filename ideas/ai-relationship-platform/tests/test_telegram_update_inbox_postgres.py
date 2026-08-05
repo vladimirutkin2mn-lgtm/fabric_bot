@@ -17,14 +17,19 @@ from app.services.telegram_update_inbox import (
 pytestmark = pytest.mark.postgres
 
 
-def payload(update_id: int, text: str = "private conversation text") -> dict[str, object]:
+def payload(
+    update_id: int,
+    text: str = "private conversation text",
+    *,
+    user_id: int = 42,
+) -> dict[str, object]:
     return {
         "update_id": update_id,
         "message": {
             "message_id": 1,
             "date": 1_700_000_000,
-            "chat": {"id": 42, "type": "private"},
-            "from": {"id": 42, "is_bot": False, "first_name": "Test"},
+            "chat": {"id": user_id, "type": "private"},
+            "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
             "text": text,
         },
     }
@@ -93,12 +98,12 @@ async def test_duplicate_update_id_with_different_payload_fails_closed(
         assert row.last_error_code == "duplicate_payload_mismatch"
 
 
-async def test_two_workers_skip_locked_claim_different_updates(
+async def test_two_workers_skip_locked_claim_different_users(
     payment_db: async_sessionmaker[AsyncSession],
 ) -> None:
     inbox = service(payment_db)
-    await inbox.accept(1010, 42, payload(1010))
-    await inbox.accept(1011, 42, payload(1011))
+    await inbox.accept(1010, 42, payload(1010, user_id=42))
+    await inbox.accept(1011, 43, payload(1011, user_id=43))
     first_locked = asyncio.Event()
     second_locked = asyncio.Event()
 
@@ -119,6 +124,42 @@ async def test_two_workers_skip_locked_claim_different_updates(
     first, second = await asyncio.gather(first_claim(), second_claim())
     assert first is not None and second is not None
     assert {first.update_id, second.update_id} == {1010, 1011}
+
+
+async def test_later_update_for_same_user_cannot_overtake_locked_update(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    inbox = service(payment_db)
+    await inbox.accept(1012, 42, payload(1012))
+    await inbox.accept(1013, 42, payload(1013))
+    first_locked = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def hold_first(_: int) -> None:
+        first_locked.set()
+        await asyncio.wait_for(release_first.wait(), timeout=5)
+
+    first_task = asyncio.create_task(inbox.claim_one("worker-one", after_lock=hold_first))
+    await asyncio.wait_for(first_locked.wait(), timeout=5)
+    assert await inbox.claim_one("worker-two") is None
+    release_first.set()
+    first = await first_task
+    assert first is not None and first.update_id == 1012
+    assert await inbox.complete(first.update_id, first.claim_id)
+    second = await inbox.claim_one("worker-two")
+    assert second is not None and second.update_id == 1013
+
+
+async def test_retrying_earlier_update_blocks_later_update_for_same_user(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
+    inbox = service(payment_db)
+    await inbox.accept(1014, 42, payload(1014))
+    await inbox.accept(1015, 42, payload(1015))
+    first = await inbox.claim_one("worker-one")
+    assert first is not None and first.update_id == 1014
+    assert await inbox.retry(first.update_id, first.claim_id, "transient")
+    assert await inbox.claim_one("worker-two") is None
 
 
 async def test_expired_lease_is_reclaimed_and_stale_claim_cannot_complete(

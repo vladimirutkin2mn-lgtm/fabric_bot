@@ -37,6 +37,12 @@ class TelegramUpdateInbox(Base):
         ),
         Index("ix_telegram_update_inbox_claimable", "status", "available_at"),
         Index("ix_telegram_update_inbox_user", "telegram_user_id"),
+        Index(
+            "ix_telegram_update_inbox_user_order",
+            "telegram_user_id",
+            "update_id",
+            "status",
+        ),
     )
 
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
