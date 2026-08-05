@@ -91,9 +91,7 @@ async def test_ten_concurrent_period_completions_grant_once(
         purchase_rows = list(purchases)
         assert len(purchase_rows) == 1
         assert purchase_rows[0].amount == 30
-        assert (
-            await session.scalar(select(func.count()).select_from(BillingOutboxEvent)) == 1
-        )
+        assert await session.scalar(select(func.count()).select_from(BillingOutboxEvent)) == 1
 
 
 @pytest.mark.asyncio
@@ -146,10 +144,7 @@ async def test_past_due_period_can_recover_to_paid_once(
 
     recovered = _paid(invoice_id="invoice-august", payment_id="payment-august")
     assert await service.apply_paid_period(user_id, recovered) is PeriodApplyOutcome.APPLIED
-    assert (
-        await service.apply_paid_period(user_id, recovered)
-        is PeriodApplyOutcome.ALREADY_APPLIED
-    )
+    assert await service.apply_paid_period(user_id, recovered) is PeriodApplyOutcome.ALREADY_APPLIED
 
     async with payment_db() as session:
         subscription = await session.scalar(select(Subscription))
