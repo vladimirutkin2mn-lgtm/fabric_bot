@@ -15,6 +15,7 @@ from app.db.analytics import AnalyticsEvent  # noqa: F401
 from app.db.base import Base
 from app.db.fsm_models import TelegramFSMState  # noqa: F401
 from app.db.models import User  # noqa: F401
+from app.db.release_gates import ReleaseGateAttestation  # noqa: F401
 from app.db.subscription_models import SubscriptionPeriod  # noqa: F401
 from app.db.telegram_models import TelegramUpdateInbox  # noqa: F401
 
@@ -43,11 +44,7 @@ async def run_async_migrations() -> None:
     )
     async with connectable.connect() as connection:
         if migration_schema is not None:
-            # The schema is created and owned by the caller. Keeping both application
-            # objects and alembic_version on this search path isolates the migration run.
             await connection.execute(text(f'SET search_path TO "{migration_schema}"'))
-            # SET starts an implicit transaction; commit it so Alembic owns and
-            # commits the following migration transaction normally.
             await connection.commit()
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
