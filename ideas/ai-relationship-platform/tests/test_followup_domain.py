@@ -49,7 +49,7 @@ def test_unknown_or_duplicate_report_reference_is_rejected() -> None:
 def test_followup_cannot_downgrade_primary_safety_signal() -> None:
     payload = report().model_dump(mode="json")
     payload["safety"] = {"high_risk_detected": True, "categories": ["threats"]}
-    base = AnalysisResult.model_validate(payload)
+    base = AnalysisResult.model_validate_json(json.dumps(payload))
     answer = FollowUpAnswer.model_validate(
         {
             "answer": "Ответ.",
