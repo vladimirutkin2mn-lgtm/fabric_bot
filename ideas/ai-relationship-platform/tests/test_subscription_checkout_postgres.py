@@ -1,10 +1,11 @@
 import asyncio
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.db.models import BillingJob, PaymentOrder, User
@@ -73,8 +74,8 @@ def settings() -> Settings:
     )
 
 
-async def user_id(sessions: object) -> object:
-    async with sessions.begin() as session:  # type: ignore[attr-defined]
+async def create_user(sessions: async_sessionmaker[AsyncSession]) -> UUID:
+    async with sessions.begin() as session:
         user = User(telegram_user_id=uuid4().int % 10**12, first_name="Subscription")
         session.add(user)
         await session.flush()
@@ -82,20 +83,23 @@ async def user_id(sessions: object) -> object:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_subscription_checkout_has_one_provider_owner(payment_db: object) -> None:
+async def test_concurrent_subscription_checkout_has_one_provider_owner(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
     gateway = FakeSubscriptionGateway()
+    configured = settings()
     service = SubscriptionCheckoutService(
-        payment_db,  # type: ignore[arg-type]
-        settings(),
-        BillingCatalog(settings()),
+        payment_db,
+        configured,
+        BillingCatalog(configured),
         {PaymentProviderName.STRIPE: gateway},
     )
-    uid = await user_id(payment_db)
+    user_id = await create_user(payment_db)
 
     results = await asyncio.gather(
         *(
             service.create_checkout(
-                uid,  # type: ignore[arg-type]
+                user_id,
                 "subscription_monthly",
                 "INTERNATIONAL",
                 "EUR",
@@ -107,13 +111,13 @@ async def test_concurrent_subscription_checkout_has_one_provider_owner(payment_d
     assert len(gateway.calls) == 1
     assert len({result.order_id for result in results}) == 1
     existing = await service.create_checkout(
-        uid,  # type: ignore[arg-type]
+        user_id,
         "subscription_monthly",
         "INTERNATIONAL",
         "EUR",
     )
     assert existing.url == "https://provider.test/subscription"
-    async with payment_db() as session:  # type: ignore[operator]
+    async with payment_db() as session:
         order = await session.scalar(select(PaymentOrder))
         assert order is not None
         assert order.mode == "subscription_initial"
@@ -124,25 +128,27 @@ async def test_concurrent_subscription_checkout_has_one_provider_owner(payment_d
 
 
 @pytest.mark.asyncio
-async def test_unknown_checkout_creates_one_durable_reconciliation_job(payment_db: object) -> None:
+async def test_unknown_checkout_creates_one_durable_reconciliation_job(
+    payment_db: async_sessionmaker[AsyncSession],
+) -> None:
     gateway = FakeSubscriptionGateway(unknown=True)
     configured = settings()
     service = SubscriptionCheckoutService(
-        payment_db,  # type: ignore[arg-type]
+        payment_db,
         configured,
         BillingCatalog(configured),
         {PaymentProviderName.STRIPE: gateway},
     )
-    uid = await user_id(payment_db)
+    user_id = await create_user(payment_db)
 
     first = await service.create_checkout(
-        uid,  # type: ignore[arg-type]
+        user_id,
         "subscription_monthly",
         "INTERNATIONAL",
         "EUR",
     )
     second = await service.create_checkout(
-        uid,  # type: ignore[arg-type]
+        user_id,
         "subscription_monthly",
         "INTERNATIONAL",
         "EUR",
@@ -150,7 +156,7 @@ async def test_unknown_checkout_creates_one_durable_reconciliation_job(payment_d
 
     assert first.order_id == second.order_id
     assert len(gateway.calls) == 1
-    async with payment_db() as session:  # type: ignore[operator]
+    async with payment_db() as session:
         job = await session.scalar(select(BillingJob))
         assert job is not None
         assert job.job_type == "subscription_checkout_reconciliation"
