@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
-_HEAD = "20260805_13"
+_HEAD = "20260805_14"
 _PARENT = "20260805_12"
 _JOB_TYPE = "subscription_checkout_reconcile"
 
