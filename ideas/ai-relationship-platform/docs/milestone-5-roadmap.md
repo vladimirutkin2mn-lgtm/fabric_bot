@@ -28,6 +28,23 @@ are complete; the milestone is not fully complete until the stages below are del
 
 ## M5B.3 — subscriptions and renewals
 
+### Delivery stages
+
+- [ ] **M5B.3A — durable lifecycle and period accounting**
+  - canonical subscription periods;
+  - exactly-once period-to-order-to-ledger transaction;
+  - past-due recovery and grace-period terminal states;
+  - cancellation/resume state recording;
+  - idempotent renewal-job scheduler handoff.
+- [ ] **M5B.3B — live providers and Telegram UX**
+  - Stripe subscription Checkout, invoices and customer portal/cancellation;
+  - YooKassa saved-payment recurring charges and cancellation;
+  - subscription webhooks, dedicated renewal worker and reconciliation;
+  - Telegram purchase, status, cancel and resume flow;
+  - provider sandbox acceptance.
+
+M5B.3 is complete only when both stages are merged and accepted.
+
 ### Goal
 
 Sell and operate `subscription_monthly` without duplicate subscriptions, renewals or credit
@@ -140,10 +157,11 @@ Honor the product promise that a full paid report includes one contextual follow
 
 ## Release sequence
 
-1. Complete and merge M5B.3.
-2. Complete and merge M5B.4.
-3. Complete and merge M5C.
-4. Deploy staging with provider sandbox credentials.
-5. Run documented Telegram, Stripe and YooKassa acceptance tests.
-6. Enable limited production traffic only after reconciliation and manual-review paths are
+1. Complete and merge M5B.3A.
+2. Complete and merge M5B.3B.
+3. Complete and merge M5B.4.
+4. Complete and merge M5C.
+5. Deploy staging with provider sandbox credentials.
+6. Run documented Telegram, Stripe and YooKassa acceptance tests.
+7. Enable limited production traffic only after reconciliation and manual-review paths are
    exercised.
