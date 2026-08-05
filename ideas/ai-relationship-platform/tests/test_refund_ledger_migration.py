@@ -62,35 +62,33 @@ def _insert_refunded_purchase(url: str, schema: str) -> None:
     order_id = uuid4()
     purchase_id = uuid4()
     refund_id = uuid4()
-    asyncio.run(
-        _execute(
-            url,
-            schema,
-            f"INSERT INTO users (id,telegram_user_id) VALUES ('{user_id}',{uuid4().int % 10**12});"
-            "INSERT INTO payment_orders "
-            "(id,user_id,provider,product_code,status,credits,amount_minor,currency,checkout_token,"
-            "provider_payment_id,provider_status,completed_at,commercial_snapshot) VALUES "
-            f"('{order_id}','{user_id}','stripe','analysis_pack_5','completed',5,1000,'EUR',"
-            f"'{uuid4()}','payment-migration','succeeded',now(),'{{}}');"
-            "INSERT INTO credit_transactions "
-            "(id,user_id,type,amount,idempotency_key,payment_order_id,product_code,"
-            "external_payment_id,external_payment_provider) VALUES "
-            f"('{purchase_id}','{user_id}','purchase',5,'purchase:{order_id}','{order_id}',"
-            "'analysis_pack_5','payment-migration','stripe');"
-            "INSERT INTO refund_requests "
-            "(id,user_id,payment_order_id,provider,provider_refund_id,status,amount_minor,currency,"
-            "credit_units,reason,idempotency_key) VALUES "
-            f"('{refund_id}','{user_id}','{order_id}','stripe','refund-migration','succeeded',"
-            "1000,'EUR',5,'requested_by_customer','refund:migration');"
-            "INSERT INTO credit_transactions "
-            "(id,user_id,type,amount,idempotency_key,payment_order_id,product_code,"
-            "external_payment_id,external_payment_provider,original_purchase_transaction_id,"
-            "refund_request_id) VALUES "
-            f"('{uuid4()}','{user_id}','purchase_refund',-5,'purchase_refund:{refund_id}',"
-            f"'{order_id}','analysis_pack_5','refund-migration','stripe','{purchase_id}',"
-            f"'{refund_id}')",
-        )
+    statements = (
+        f"INSERT INTO users (id,telegram_user_id) VALUES ('{user_id}',{uuid4().int % 10**12})",
+        "INSERT INTO payment_orders "
+        "(id,user_id,provider,product_code,status,credits,amount_minor,currency,checkout_token,"
+        "provider_payment_id,provider_status,completed_at,commercial_snapshot) VALUES "
+        f"('{order_id}','{user_id}','stripe','analysis_pack_5','completed',5,1000,'EUR',"
+        f"'{uuid4()}','payment-migration','succeeded',now(),'{{}}')",
+        "INSERT INTO credit_transactions "
+        "(id,user_id,type,amount,idempotency_key,payment_order_id,product_code,"
+        "external_payment_id,external_payment_provider) VALUES "
+        f"('{purchase_id}','{user_id}','purchase',5,'purchase:{order_id}','{order_id}',"
+        "'analysis_pack_5','payment-migration','stripe')",
+        "INSERT INTO refund_requests "
+        "(id,user_id,payment_order_id,provider,provider_refund_id,status,amount_minor,currency,"
+        "credit_units,reason,idempotency_key) VALUES "
+        f"('{refund_id}','{user_id}','{order_id}','stripe','refund-migration','succeeded',"
+        "1000,'EUR',5,'requested_by_customer','refund:migration')",
+        "INSERT INTO credit_transactions "
+        "(id,user_id,type,amount,idempotency_key,payment_order_id,product_code,"
+        "external_payment_id,external_payment_provider,original_purchase_transaction_id,"
+        "refund_request_id) VALUES "
+        f"('{uuid4()}','{user_id}','purchase_refund',-5,'purchase_refund:{refund_id}',"
+        f"'{order_id}','analysis_pack_5','refund-migration','stripe','{purchase_id}',"
+        f"'{refund_id}')",
     )
+    for statement in statements:
+        asyncio.run(_execute(url, schema, statement))
 
 
 def test_refund_ledger_index_round_trip_when_no_refunds_exist() -> None:
