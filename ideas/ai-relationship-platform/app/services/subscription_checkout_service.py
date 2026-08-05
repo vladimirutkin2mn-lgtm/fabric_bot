@@ -67,6 +67,12 @@ class SubscriptionCheckoutService:
             raise SubscriptionCheckoutRejected("subscription provider unavailable")
         if offer.price_reference.startswith("unconfigured:"):
             raise SubscriptionCheckoutRejected("subscription price unavailable")
+        if (
+            offer.provider is PaymentProviderName.YOOKASSA
+            and self._settings.yookassa_receipts_required
+            and not self._settings.yookassa_receipt_email
+        ):
+            raise SubscriptionCheckoutRejected("receipt contact unavailable")
 
         attempt = uuid4()
         now = datetime.now(UTC)
@@ -150,6 +156,11 @@ class SubscriptionCheckoutService:
                 cancel_url=(
                     f"{self._settings.payment_public_base_url}/payments/return/"
                     f"{order.checkout_token}"
+                ),
+                receipt_contact=(
+                    self._settings.yookassa_receipt_email or None
+                    if offer.provider is PaymentProviderName.YOOKASSA
+                    else None
                 ),
             )
             order_id = order.id

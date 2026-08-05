@@ -36,20 +36,23 @@ are complete; the milestone is not fully complete until the stages below are del
 
 ### Live-provider delivery stages
 
-- [ ] **M5B.3B.1 — Stripe subscriptions**
+- [x] **M5B.3B.1 — Stripe subscription code**
   - Stripe Checkout `mode=subscription`;
   - authoritative invoice/subscription retrieval;
   - webhook and scheduled reconciliation processing;
-  - Telegram purchase, status, cancel-at-period-end and resume UX;
-  - Stripe sandbox acceptance.
-- [ ] **M5B.3B.2 — YooKassa recurring payments**
+  - Telegram purchase, status, cancel-at-period-end and resume UX.
+- [ ] **Stripe sandbox acceptance**
+  - execute the checked-in provider test-mode checklist against a deployed staging environment.
+- [x] **M5B.3B.2 — YooKassa recurring-payment code**
   - explicit saved-payment-method consent and encrypted provider reference;
   - initial payment with `save_payment_method`;
-  - idempotent provider-initiated monthly charges;
-  - cancellation, recovery and YooKassa sandbox acceptance.
+  - merchant-initiated monthly charges with stable provider idempotency keys;
+  - local cancel-at-period-end, recovery and Telegram RU/RUB UX.
+- [ ] **YooKassa sandbox acceptance**
+  - execute the checked-in provider test-mode checklist against a deployed staging environment.
 
-M5B.3 is complete only when M5B.3A, M5B.3B.1 and M5B.3B.2 are merged and both provider
-sandbox checklists pass.
+M5B.3 is complete only when M5B.3A, both provider code slices and both provider sandbox
+checklists are complete.
 
 ### Goal
 
@@ -163,9 +166,9 @@ Honor the product promise that a full paid report includes one contextual follow
 
 ## Release sequence
 
-1. Complete and merge M5B.3B.1 (Stripe).
-2. Complete and merge M5B.3B.2 (YooKassa).
-3. Run both provider sandbox acceptance checklists and close M5B.3.
+1. Merge M5B.3B.2 (YooKassa recurring-payment code).
+2. Deploy staging and execute both provider sandbox acceptance checklists.
+3. Close M5B.3 only after both sandbox gates pass.
 4. Complete and merge M5B.4.
 5. Complete and merge M5C.
 6. Enable limited production traffic only after reconciliation and manual-review paths are

@@ -24,24 +24,37 @@ from app.services.subscription_management_service import (
 router = Router(name="subscriptions")
 
 
-def subscription_market_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def subscription_market_keyboard(settings: Settings) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if settings.yookassa_enabled and settings.yookassa_recurring_enabled:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Россия · RUB",
+                    callback_data="credits:offer:subscription_monthly:RU:RUB",
+                )
+            ]
+        )
+    if settings.stripe_enabled and settings.stripe_price_subscription_monthly_eur:
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="International · EUR",
                     callback_data="credits:offer:subscription_monthly:INTERNATIONAL:EUR",
                 )
-            ],
+            ]
+        )
+    if settings.stripe_enabled and settings.stripe_price_subscription_monthly_usd:
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="International · USD",
                     callback_data="credits:offer:subscription_monthly:INTERNATIONAL:USD",
                 )
-            ],
-            [InlineKeyboardButton(text="Вернуться", callback_data="menu:balance")],
-        ]
-    )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Вернуться", callback_data="menu:balance")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def subscription_checkout_keyboard(url: str) -> InlineKeyboardMarkup:
@@ -182,9 +195,14 @@ async def choose_subscription_market(
     if not billing_settings.subscriptions_enabled:
         await callback.message.answer("Подписка сейчас недоступна.")
         return
+    keyboard = subscription_market_keyboard(billing_settings)
+    if len(keyboard.inline_keyboard) == 1:
+        await callback.message.answer("Подписка сейчас недоступна.")
+        return
     await callback.message.answer(
-        "Выберите валюту ежемесячной подписки. Сумма и период будут показаны Stripe до оплаты.",
-        reply_markup=subscription_market_keyboard(),
+        "Выберите рынок и валюту ежемесячной подписки. Провайдер покажет сумму, "
+        "период и условия автопродления до подтверждения оплаты.",
+        reply_markup=keyboard,
     )
 
 
@@ -213,8 +231,9 @@ async def create_subscription_checkout(
     if result.url is None:
         await callback.message.answer("Подписка создаётся. Обновите статус через несколько секунд.")
         return
+    provider = "YooKassa" if market == "RU" else "Stripe"
     await callback.message.answer(
-        "Stripe покажет сумму, период и условия автопродления до подтверждения оплаты.",
+        f"{provider} покажет сумму, период и условия автопродления до подтверждения оплаты.",
         reply_markup=subscription_checkout_keyboard(result.url),
     )
 

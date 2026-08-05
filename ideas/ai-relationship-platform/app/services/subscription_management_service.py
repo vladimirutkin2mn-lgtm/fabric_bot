@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.db.models import Subscription, User
-from app.providers.payments.subscription_gateway import SubscriptionGateway
+from app.providers.payments.subscription_gateway import (
+    SubscriptionGateway,
+    SubscriptionStateFact,
+)
 from app.services.subscription_event_processor import SubscriptionEventProcessor
 
 _ACTIVE = ("incomplete", "active", "past_due", "cancel_at_period_end", "paused")
@@ -60,8 +63,12 @@ class SubscriptionManagementService:
             return SubscriptionManagementOutcome.NOT_FOUND
         if subscription.status == "cancel_at_period_end":
             return SubscriptionManagementOutcome.ALREADY_SET
+        if not self._settings.permits_renewal():
+            return SubscriptionManagementOutcome.UNAVAILABLE
+        if subscription.provider == "yookassa":
+            return await self._apply_local_yookassa(subscription, cancel_at_period_end=True)
         gateway = self._gateways.get(subscription.provider)
-        if not self._settings.permits_renewal() or gateway is None:
+        if gateway is None:
             return SubscriptionManagementOutcome.UNAVAILABLE
         fact = await gateway.cancel_subscription(subscription.provider_subscription_id)
         await self._processor.apply(fact)
@@ -73,11 +80,35 @@ class SubscriptionManagementService:
             return SubscriptionManagementOutcome.NOT_FOUND
         if subscription.status != "cancel_at_period_end":
             return SubscriptionManagementOutcome.ALREADY_SET
+        if not self._settings.permits_renewal():
+            return SubscriptionManagementOutcome.UNAVAILABLE
+        if subscription.provider == "yookassa":
+            return await self._apply_local_yookassa(subscription, cancel_at_period_end=False)
         gateway = self._gateways.get(subscription.provider)
-        if not self._settings.permits_renewal() or gateway is None:
+        if gateway is None:
             return SubscriptionManagementOutcome.UNAVAILABLE
         fact = await gateway.resume_subscription(subscription.provider_subscription_id)
         await self._processor.apply(fact)
+        return SubscriptionManagementOutcome.UPDATED
+
+    async def _apply_local_yookassa(
+        self, subscription: Subscription, *, cancel_at_period_end: bool
+    ) -> SubscriptionManagementOutcome:
+        if not self._settings.yookassa_recurring_enabled:
+            return SubscriptionManagementOutcome.UNAVAILABLE
+        if subscription.current_period_end is None:
+            return SubscriptionManagementOutcome.UNAVAILABLE
+        await self._processor.apply(
+            SubscriptionStateFact(
+                user_id=subscription.user_id,
+                provider="yookassa",
+                provider_subscription_id=subscription.provider_subscription_id,
+                status="active",
+                current_period_start=subscription.current_period_start,
+                current_period_end=subscription.current_period_end,
+                cancel_at_period_end=cancel_at_period_end,
+            )
+        )
         return SubscriptionManagementOutcome.UPDATED
 
     async def _owned(self, user_id: UUID, subscription_id: UUID) -> Subscription | None:
