@@ -80,15 +80,14 @@ def test_subscription_job_constraint_round_trip_when_empty() -> None:
     environment = _environment(url, schema)
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        assert asyncio.run(
-            _scalar(url, schema, "SELECT version_num FROM alembic_version")
-        ) == _HEAD
+        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _HEAD
         _insert_job(url, schema)
         asyncio.run(_execute(url, schema, "DELETE FROM billing_jobs"))
         subprocess.run(("alembic", "downgrade", _PARENT), check=True, env=environment)
-        assert asyncio.run(
-            _scalar(url, schema, "SELECT version_num FROM alembic_version")
-        ) == _PARENT
+        assert (
+            asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version"))
+            == _PARENT
+        )
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         _insert_job(url, schema)
     finally:
@@ -110,9 +109,7 @@ def test_subscription_job_downgrade_refuses_live_reconciliation_state() -> None:
         )
         assert failed.returncode != 0
         assert "downgrade refused" in failed.stderr
-        assert asyncio.run(
-            _scalar(url, schema, "SELECT version_num FROM alembic_version")
-        ) == _HEAD
+        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _HEAD
         assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM billing_jobs")) == 1
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
