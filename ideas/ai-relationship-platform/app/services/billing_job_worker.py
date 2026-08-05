@@ -8,15 +8,23 @@ from uuid import UUID, uuid4
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import BillingJob, PaymentOrder, ProviderWebhookEvent, Subscription
+from app.db.models import (
+    BillingJob,
+    PaymentOrder,
+    ProviderWebhookEvent,
+    RefundRequest,
+    Subscription,
+)
 from app.providers.payments.base import PermanentProviderError, UnknownProviderOutcome
 from app.providers.payments.gateway import CreateCheckout, OneTimePaymentGateway
+from app.providers.payments.refund_gateway import RefundGateway
 from app.providers.payments.subscription_gateway import (
     CreateSubscriptionCheckout,
     SubscriptionGateway,
 )
 from app.services.checkout_service import CheckoutRejected, ReceiptContactCipher
 from app.services.payment_completion_service import PaymentCompletionService
+from app.services.refund_reconciliation_service import RefundReconciliationService
 from app.services.subscription_event_processor import SubscriptionEventProcessor
 
 logger = logging.getLogger(__name__)
@@ -36,6 +44,8 @@ class BillingJobWorker:
         receipt_cipher: ReceiptContactCipher | None = None,
         subscription_gateways: dict[str, SubscriptionGateway] | None = None,
         subscription_processor: SubscriptionEventProcessor | None = None,
+        refund_gateways: dict[str, RefundGateway] | None = None,
+        refund_processor: RefundReconciliationService | None = None,
     ) -> None:
         self._sessions, self._gateways, self._completion = sessions, gateways, completion
         self._lease, self._base, self._max = lease_seconds, retry_base_seconds, max_attempts
@@ -43,6 +53,8 @@ class BillingJobWorker:
         self._receipt_cipher = receipt_cipher
         self._subscription_gateways = subscription_gateways or {}
         self._subscription_processor = subscription_processor
+        self._refund_gateways = refund_gateways or {}
+        self._refund_processor = refund_processor
 
     async def claim_one(self, worker_id: str) -> tuple[UUID, UUID] | None:
         now = datetime.now(UTC)
@@ -86,6 +98,9 @@ class BillingJobWorker:
                 "unsupported_provider",
                 "corrupt_receipt_contact",
                 "subscription_processor_unavailable",
+                "refund_processor_unavailable",
+                "refund_not_found",
+                "refund_payment_missing",
             }:
                 code = "provider_validation"
             await self._manual(job_id, claim_id, code)
@@ -103,13 +118,15 @@ class BillingJobWorker:
                 return
             job_type = job.job_type
             object_id = job.object_id
-            provider = job.provider
 
         if job_type == "subscription_renewal":
             await self._process_subscription_renewal(job_id, claim_id, UUID(object_id))
             return
         if job_type == "subscription_checkout_reconcile":
             await self._process_subscription_checkout(job_id, claim_id, UUID(object_id))
+            return
+        if job_type == "refund_reconciliation":
+            await self._process_refund(job_id, claim_id, UUID(object_id))
             return
         if job_type == "webhook_processing":
             await self._process_webhook(job_id, claim_id, UUID(object_id))
@@ -165,6 +182,26 @@ class BillingJobWorker:
             checkout = await self._retry_checkout_creation(order.id)
         payment = await self._gateways[provider].fetch_payment(checkout)
         await self._completion.complete_claimed(job_id, claim_id, order.id, payment)
+
+    async def _process_refund(
+        self, job_id: UUID, claim_id: UUID, refund_request_id: UUID
+    ) -> None:
+        async with self._sessions() as session:
+            refund = await session.get(RefundRequest, refund_request_id)
+            if refund is None:
+                raise PermanentProviderError("refund_not_found")
+            provider = refund.provider
+        gateway = self._refund_gateways.get(provider)
+        if gateway is None:
+            raise PermanentProviderError("unsupported_provider")
+        if self._refund_processor is None:
+            raise PermanentProviderError("refund_processor_unavailable")
+        await self._refund_processor.process_claimed(
+            job_id,
+            claim_id,
+            refund_request_id,
+            gateway,
+        )
 
     async def _process_subscription_renewal(
         self, job_id: UUID, claim_id: UUID, subscription_id: UUID
@@ -361,6 +398,11 @@ class BillingJobWorker:
         order: PaymentOrder | None = None
         if job.job_type in {"payment_reconciliation", "subscription_checkout_reconcile"}:
             order = await session.get(PaymentOrder, UUID(job.object_id), with_for_update=True)
+        elif job.job_type == "refund_reconciliation":
+            refund = await session.get(RefundRequest, UUID(job.object_id), with_for_update=True)
+            if refund is not None and refund.status not in {"succeeded", "failed"}:
+                refund.status = "manual_review"
+                refund.failure_code = code
         elif job.job_type == "webhook_processing":
             event = await session.get(
                 ProviderWebhookEvent, UUID(job.object_id), with_for_update=True
