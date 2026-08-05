@@ -130,9 +130,7 @@ class SubscriptionLifecycleService:
         period_key = subscription_period_key(period_start, period_end)
 
         async with self._sessions.begin() as session:
-            user = await session.scalar(
-                select(User).where(User.id == user_id).with_for_update()
-            )
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             if user is None or user.privacy_status != "active":
                 raise SubscriptionOwnershipError("active user not found")
 
@@ -207,7 +205,9 @@ class SubscriptionLifecycleService:
                         and period_start >= _aware_utc(subscription.cancel_at)
                     )
                 ):
-                    raise SubscriptionStateMismatch("paid period is after subscription cancellation")
+                    raise SubscriptionStateMismatch(
+                        "paid period is after subscription cancellation"
+                    )
 
             period = await session.scalar(
                 select(SubscriptionPeriod)
@@ -376,13 +376,9 @@ class SubscriptionLifecycleService:
             user_id = identified.user_id
 
         async with self._sessions.begin() as session:
-            user = await session.scalar(
-                select(User).where(User.id == user_id).with_for_update()
-            )
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             subscription = await session.scalar(
-                select(Subscription)
-                .where(Subscription.id == identified.id)
-                .with_for_update()
+                select(Subscription).where(Subscription.id == identified.id).with_for_update()
             )
             if user is None or subscription is None or user.privacy_status != "active":
                 return False
@@ -404,6 +400,15 @@ class SubscriptionLifecycleService:
             )
             if period is not None and period.status == "paid":
                 return False
+            if period is not None and period.status == "past_due":
+                if (
+                    period.provider_invoice_id == value.provider_invoice_id
+                    and period.amount_minor == value.amount_minor
+                    and period.currency == value.currency
+                    and period.credits == value.credits
+                ):
+                    return False
+                raise SubscriptionStateMismatch("past-due period identity mismatch")
             if period is None:
                 period = SubscriptionPeriod(
                     subscription_id=subscription.id,
@@ -446,13 +451,9 @@ class SubscriptionLifecycleService:
         """Persist provider-confirmed cancellation without removing paid credits."""
         cancel_at = _aware_utc(effective_at)
         async with self._sessions.begin() as session:
-            user = await session.scalar(
-                select(User).where(User.id == user_id).with_for_update()
-            )
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             subscription = await session.scalar(
-                select(Subscription)
-                .where(Subscription.id == subscription_id)
-                .with_for_update()
+                select(Subscription).where(Subscription.id == subscription_id).with_for_update()
             )
             if (
                 user is None
@@ -494,13 +495,9 @@ class SubscriptionLifecycleService:
         """Persist provider-confirmed restoration before cancellation becomes effective."""
         current = _aware_utc(now or datetime.now(UTC))
         async with self._sessions.begin() as session:
-            user = await session.scalar(
-                select(User).where(User.id == user_id).with_for_update()
-            )
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             subscription = await session.scalar(
-                select(Subscription)
-                .where(Subscription.id == subscription_id)
-                .with_for_update()
+                select(Subscription).where(Subscription.id == subscription_id).with_for_update()
             )
             if (
                 user is None
