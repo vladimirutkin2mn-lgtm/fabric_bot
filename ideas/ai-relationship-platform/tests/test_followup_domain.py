@@ -22,7 +22,7 @@ def report() -> AnalysisResult:
 def test_valid_followup_uses_only_existing_report_references() -> None:
     answer = FollowUpAnswer.model_validate(
         {
-            "answer": "В отчёте есть смешанные сигналы, поэтому лучше уточнить ожидания прямо.",
+            "answer": "Отчёт показывает смешанные сигналы, поэтому лучше уточнить ожидания прямо.",
             "report_refs": ["summary", "next_actions.0"],
             "limitations": ["Ответ основан только на уже сформированном отчёте."],
             "safety": {"high_risk_detected": False, "categories": []},
