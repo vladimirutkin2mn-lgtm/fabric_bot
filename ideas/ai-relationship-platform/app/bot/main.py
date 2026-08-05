@@ -11,6 +11,7 @@ from app.bot.handlers import router
 from app.bot.observability import TelegramObservabilityMiddleware
 from app.bot.postgres_fsm import PostgresEventIsolation, PostgresFSMStorage
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
+from app.bot.subscription_handlers import router as subscription_router
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
 from app.domain.billing import BillingCatalog
@@ -85,6 +86,7 @@ def create_dispatcher(
     dispatcher.callback_query.outer_middleware(rate_middleware)
     dispatcher.update.outer_middleware(TelegramObservabilityMiddleware(reporter))
     dispatcher.update.outer_middleware(dependency_middleware)
+    dispatcher.include_router(subscription_router)
     dispatcher.include_router(router)
     dispatcher["database_engine"] = resolved_engine
     dispatcher["owns_database_engine"] = engine is None
