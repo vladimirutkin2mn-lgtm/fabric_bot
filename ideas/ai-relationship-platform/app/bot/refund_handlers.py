@@ -68,7 +68,7 @@ async def refund_menu(
     onboarding: OnboardingService,
     refunds: RefundService | None,
 ) -> None:
-    if refunds is None:
+    if refunds is None or message.from_user is None:
         await message.answer("Возвраты сейчас недоступны.")
         return
     user = await onboarding.current_user(message.from_user.id)
@@ -97,7 +97,7 @@ async def refund_status_command(
     onboarding: OnboardingService,
     refunds: RefundService | None,
 ) -> None:
-    if refunds is None:
+    if refunds is None or message.from_user is None:
         await message.answer("История возвратов сейчас недоступна.")
         return
     user = await onboarding.current_user(message.from_user.id)
