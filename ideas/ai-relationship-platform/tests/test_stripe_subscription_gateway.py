@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import uuid4
+from typing import Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -139,10 +140,11 @@ def invoice_value(
 def gateway(invoice: object, subscription: object) -> tuple[StripeGateway, FakeClient]:
     value = object.__new__(StripeGateway)
     client = FakeClient(invoice, subscription)
-    value._stripe = FakeStripe()  # type: ignore[attr-defined]
-    value._client = client  # type: ignore[attr-defined]
-    value._webhook_secret = "whsec_test"  # type: ignore[attr-defined]
-    value._timeout = 1  # type: ignore[attr-defined]
+    dynamic = cast(Any, value)
+    dynamic._stripe = FakeStripe()
+    dynamic._client = client
+    dynamic._webhook_secret = "whsec_test"
+    dynamic._timeout = 1
     return value, client
 
 
@@ -171,10 +173,12 @@ async def test_subscription_checkout_uses_server_metadata_and_idempotency() -> N
     assert result.checkout_id == "cs_sub_1"
     assert client.checkout.sessions.created is not None
     params, options = client.checkout.sessions.created
+    metadata = cast(dict[str, str], params["metadata"])
+    subscription_data = cast(dict[str, object], params["subscription_data"])
     assert params["mode"] == "subscription"
     assert params["line_items"] == [{"price": "price_monthly_eur", "quantity": 1}]
-    assert params["metadata"] == params["subscription_data"]["metadata"]  # type: ignore[index]
-    assert params["metadata"]["amount_minor"] == "990"  # type: ignore[index]
+    assert metadata == subscription_data["metadata"]
+    assert metadata["amount_minor"] == "990"
     assert options == {"idempotency_key": "subscription:checkout:1"}
 
 
@@ -189,7 +193,8 @@ async def test_paid_invoice_normalizes_authoritative_period(
     fact = await value.fetch_subscription_event("invoice.paid", "in_1")
 
     assert isinstance(fact, PaidSubscriptionFact)
-    assert fact.user_id.hex == commercial["user_id"].replace("-", "")
+    assert fact.user_id == UUID(commercial["user_id"])
+    assert fact.initial_order_id == UUID(commercial["order_id"])
     assert fact.provider_subscription_id == "sub_1"
     assert fact.provider_invoice_id == "in_1"
     assert fact.provider_payment_id == "pi_1"
