@@ -63,13 +63,17 @@ def test_subscription_period_migration_round_trip_when_empty() -> None:
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
             "20260805_12"
         )
-        assert asyncio.run(
-            _scalar(url, schema, "SELECT to_regclass('subscription_periods') IS NOT NULL")
-        ) is True
+        assert (
+            asyncio.run(
+                _scalar(url, schema, "SELECT to_regclass('subscription_periods') IS NOT NULL")
+            )
+            is True
+        )
         subprocess.run(("alembic", "downgrade", "20260804_11"), check=True, env=environment)
-        assert asyncio.run(
-            _scalar(url, schema, "SELECT to_regclass('subscription_periods') IS NULL")
-        ) is True
+        assert (
+            asyncio.run(_scalar(url, schema, "SELECT to_regclass('subscription_periods') IS NULL"))
+            is True
+        )
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
