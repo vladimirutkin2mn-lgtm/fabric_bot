@@ -63,7 +63,8 @@ def _insert_refunded_purchase(url: str, schema: str) -> None:
     purchase_id = uuid4()
     refund_id = uuid4()
     statements = (
-        f"INSERT INTO users (id,telegram_user_id) VALUES ('{user_id}',{uuid4().int % 10**12})",
+        "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) VALUES "
+        f"('{user_id}',{uuid4().int % 10**12},'Migration','active')",
         "INSERT INTO payment_orders "
         "(id,user_id,provider,product_code,status,credits,amount_minor,currency,checkout_token,"
         "provider_payment_id,provider_status,completed_at,commercial_snapshot) VALUES "
