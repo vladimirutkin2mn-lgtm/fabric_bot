@@ -122,11 +122,13 @@ class RefundService:
             result: list[RefundPurchaseView] = []
             for order, purchase in rows:
                 gateway = self._gateways.get(order.provider)
-                if gateway is None or order.completed_at is None or order.provider_payment_id is None:
+                if (
+                    gateway is None
+                    or order.completed_at is None
+                    or order.provider_payment_id is None
+                ):
                     continue
-                committed_credits, committed_amount = await self._committed(
-                    session, order.id
-                )
+                committed_credits, committed_amount = await self._committed(session, order.id)
                 remaining = purchase.amount - committed_credits
                 if remaining < 1:
                     continue
@@ -169,9 +171,7 @@ class RefundService:
             return RefundRequestResult(RefundRequestOutcome.INVALID_UNITS)
         cutoff = datetime.now(UTC) - timedelta(days=self._settings.billing_refund_window_days)
         async with self._sessions.begin() as session:
-            user = await session.scalar(
-                select(User).where(User.id == user_id).with_for_update()
-            )
+            user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
             if user is None or user.privacy_status != "active":
                 return RefundRequestResult(RefundRequestOutcome.NOT_FOUND)
             order = await session.scalar(
