@@ -150,9 +150,7 @@ class DeploymentVerifier:
         return VerificationCheck(
             "telegram_webhook_authentication",
             passed,
-            "wrong webhook secret is rejected"
-            if passed
-            else "webhook authentication check failed",
+            "wrong webhook secret is rejected" if passed else "webhook authentication check failed",
         )
 
     async def _check_telegram_webhook(self) -> tuple[VerificationCheck, ...]:
@@ -206,7 +204,9 @@ class DeploymentVerifier:
 
         error_value = result.get("last_error_date")
         last_error_date = (
-            error_value if isinstance(error_value, int) and not isinstance(error_value, bool) else None
+            error_value
+            if isinstance(error_value, int) and not isinstance(error_value, bool)
+            else None
         )
         recent_error = bool(
             last_error_date is not None
