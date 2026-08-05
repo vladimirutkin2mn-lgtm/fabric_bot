@@ -44,6 +44,7 @@ def create_app(
     deployment_settings: DeploymentSettings | None = None,
     telegram_bot: Bot | None = None,
     register_telegram_webhook: bool = True,
+    schema_heads: tuple[str, ...] | None = None,
 ) -> FastAPI:
     """Build an application with injectable configuration and database engine."""
     resolved_settings = settings or get_settings()
@@ -99,6 +100,7 @@ def create_app(
     application = FastAPI(title="HeartSignal API", version="0.1.0", lifespan=lifespan)
     application.add_middleware(HttpObservabilityMiddleware, reporter=reporter)
     application.state.db_engine = resolved_engine
+    application.state.expected_schema_heads = schema_heads
     application.state.settings = resolved_settings
     application.state.observability_settings = resolved_observability
     application.state.deployment_settings = resolved_deployment

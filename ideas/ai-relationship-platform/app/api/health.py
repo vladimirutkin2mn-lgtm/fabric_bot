@@ -1,8 +1,12 @@
 """Kubernetes- and Compose-compatible health endpoints."""
 
 from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+
+from app.services.schema_health import (
+    SchemaMetadataError,
+    database_schema_health,
+    expected_schema_heads,
+)
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -15,13 +19,30 @@ async def liveness() -> dict[str, str]:
 
 @router.get("/ready")
 async def readiness(request: Request) -> dict[str, str]:
-    """Report readiness after executing a database round trip."""
+    """Require database connectivity and the exact packaged Alembic head."""
+    configured_heads: tuple[str, ...] | None = request.app.state.expected_schema_heads
     try:
-        async with request.app.state.db_engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
-    except SQLAlchemyError as exc:
+        required_heads = configured_heads or expected_schema_heads()
+    except SchemaMetadataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="schema metadata unavailable",
+        ) from exc
+
+    health = await database_schema_health(request.app.state.db_engine, required_heads)
+    if health.reason == "database_unavailable":
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="database unavailable",
-        ) from exc
-    return {"status": "ok", "database": "available"}
+        )
+    if health.reason == "schema_unavailable":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database schema unavailable",
+        )
+    if health.reason == "schema_outdated":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database schema is not current",
+        )
+    return {"status": "ok", "database": "available", "schema": "current"}
