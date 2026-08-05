@@ -1,5 +1,6 @@
 """Fail-closed staging acceptance and limited-production readiness service."""
 
+import os
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,6 +21,8 @@ from app.db.models import (
 from app.db.release_gates import ReleaseGateAttestation
 
 _EVIDENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/#-]*$")
+_CODE_SHA_PATTERN = re.compile(r"^[0-9a-f]{7,64}$")
+_CHECKLIST_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class ReleaseGateName(StrEnum):
@@ -45,10 +48,6 @@ class ReleaseGateState(StrEnum):
 class ReleaseGateAttestationRequest(BaseModel):
     status: ReleaseGateResult
     evidence_ref: str = Field(min_length=1, max_length=512)
-
-    def validate_evidence(self) -> None:
-        if not _EVIDENCE_PATTERN.fullmatch(self.evidence_ref):
-            raise ValueError("evidence_ref must be an opaque ASCII reference without query data")
 
 
 class ReleaseGateView(BaseModel):
@@ -85,9 +84,22 @@ class ReleaseGateError(RuntimeError):
 class ReleaseReadinessService:
     """Record exact staging evidence and compute a non-bypassable release snapshot."""
 
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], settings: Settings) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        *,
+        code_sha: str | None = None,
+        checklist_version: str | None = None,
+    ) -> None:
         self._sessions = sessions
         self._settings = settings
+        self._code_sha = (code_sha if code_sha is not None else os.getenv("RELEASE_CODE_SHA", "")).strip()
+        self._checklist_version = (
+            checklist_version
+            if checklist_version is not None
+            else os.getenv("RELEASE_CHECKLIST_VERSION", "m5-live-v1")
+        ).strip()
 
     async def snapshot(self) -> ReleaseReadiness:
         async with self._sessions() as session:
@@ -98,13 +110,7 @@ class ReleaseReadinessService:
         gates = [
             self._gate_view(name, latest.get(name), schema_revision) for name in ReleaseGateName
         ]
-        blockers: list[str] = []
-        if self._settings.app_env != "staging":
-            blockers.append("environment_not_staging")
-        if not self._settings.release_code_sha:
-            blockers.append("release_code_sha_missing")
-        if schema_revision is None:
-            blockers.append("schema_revision_missing")
+        blockers = self._identity_blockers(schema_revision)
         for gate in gates:
             blockers.extend(f"{gate.gate_name}:{item}" for item in gate.configuration_blockers)
             if gate.state is not ReleaseGateState.PASSED:
@@ -114,9 +120,9 @@ class ReleaseReadinessService:
         return ReleaseReadiness(
             generated_at=datetime.now(UTC),
             app_env=self._settings.app_env,
-            code_sha=self._settings.release_code_sha or None,
+            code_sha=self._code_sha or None,
             schema_revision=schema_revision,
-            checklist_version=self._settings.release_checklist_version,
+            checklist_version=self._checklist_version,
             gates=gates,
             financial_blockers=financial,
             blockers=unique_blockers,
@@ -128,14 +134,14 @@ class ReleaseReadinessService:
         gate_name: ReleaseGateName,
         request: ReleaseGateAttestationRequest,
     ) -> ReleaseReadiness:
-        try:
-            request.validate_evidence()
-        except ValueError as exc:
-            raise ReleaseGateError("invalid_evidence_ref") from exc
+        if not _EVIDENCE_PATTERN.fullmatch(request.evidence_ref):
+            raise ReleaseGateError("invalid_evidence_ref")
         if self._settings.app_env != "staging":
             raise ReleaseGateError("staging_only")
-        if not self._settings.release_code_sha:
-            raise ReleaseGateError("release_code_sha_missing")
+        if not _CODE_SHA_PATTERN.fullmatch(self._code_sha):
+            raise ReleaseGateError("release_code_sha_invalid")
+        if not _CHECKLIST_PATTERN.fullmatch(self._checklist_version):
+            raise ReleaseGateError("release_checklist_version_invalid")
 
         async with self._sessions.begin() as session:
             schema_revision = await self._schema_revision(session)
@@ -148,14 +154,26 @@ class ReleaseReadinessService:
                 ReleaseGateAttestation(
                     gate_name=gate_name.value,
                     status=request.status.value,
-                    checklist_version=self._settings.release_checklist_version,
+                    checklist_version=self._checklist_version,
                     app_env=self._settings.app_env,
-                    code_sha=self._settings.release_code_sha,
+                    code_sha=self._code_sha,
                     schema_revision=schema_revision,
                     evidence_ref=request.evidence_ref,
                 )
             )
         return await self.snapshot()
+
+    def _identity_blockers(self, schema_revision: str | None) -> list[str]:
+        blockers: list[str] = []
+        if self._settings.app_env != "staging":
+            blockers.append("environment_not_staging")
+        if not _CODE_SHA_PATTERN.fullmatch(self._code_sha):
+            blockers.append("release_code_sha_invalid")
+        if not _CHECKLIST_PATTERN.fullmatch(self._checklist_version):
+            blockers.append("release_checklist_version_invalid")
+        if schema_revision is None:
+            blockers.append("schema_revision_missing")
+        return blockers
 
     async def _latest_attestations(
         self, session: AsyncSession
@@ -189,9 +207,9 @@ class ReleaseReadinessService:
             state = ReleaseGateState.MISSING
             current_code = current_schema = current_checklist = False
         else:
-            current_code = row.code_sha == self._settings.release_code_sha
+            current_code = row.code_sha == self._code_sha
             current_schema = row.schema_revision == schema_revision
-            current_checklist = row.checklist_version == self._settings.release_checklist_version
+            current_checklist = row.checklist_version == self._checklist_version
             if row.status == ReleaseGateResult.FAILED.value:
                 state = ReleaseGateState.FAILED
             elif current_code and current_schema and current_checklist:
@@ -213,10 +231,11 @@ class ReleaseReadinessService:
     def _configuration_blockers(self, gate_name: ReleaseGateName) -> list[str]:
         settings = self._settings
         blockers: list[str] = []
-        if not settings.billing_enabled and gate_name is not ReleaseGateName.OPENAI_FOLLOWUP:
-            blockers.append("billing_disabled")
-        if not settings.payment_public_base_url.startswith("https://") and gate_name is not ReleaseGateName.OPENAI_FOLLOWUP:
-            blockers.append("public_https_missing")
+        if gate_name is not ReleaseGateName.OPENAI_FOLLOWUP:
+            if not settings.billing_enabled:
+                blockers.append("billing_disabled")
+            if not settings.payment_public_base_url.startswith("https://"):
+                blockers.append("public_https_missing")
         if gate_name in {
             ReleaseGateName.STRIPE_SUBSCRIPTION,
             ReleaseGateName.STRIPE_REFUND,
@@ -232,7 +251,7 @@ class ReleaseReadinessService:
             if not settings.subscriptions_enabled:
                 blockers.append("subscriptions_disabled")
             configured_offer = any(
-                price and amount is not None
+                bool(price) and amount is not None
                 for price, amount in (
                     (
                         settings.stripe_price_subscription_monthly_eur,
@@ -252,7 +271,10 @@ class ReleaseReadinessService:
         }:
             if not settings.yookassa_enabled:
                 blockers.append("yookassa_disabled")
-            if not settings.yookassa_shop_id.get_secret_value() or not settings.yookassa_secret_key.get_secret_value():
+            if not (
+                settings.yookassa_shop_id.get_secret_value()
+                and settings.yookassa_secret_key.get_secret_value()
+            ):
                 blockers.append("yookassa_test_credentials_missing")
             if not settings.yookassa_webhook_ip_allowlist.strip():
                 blockers.append("yookassa_webhook_allowlist_missing")
@@ -261,9 +283,11 @@ class ReleaseReadinessService:
                 blockers.append("subscriptions_disabled")
             if not settings.yookassa_recurring_enabled:
                 blockers.append("yookassa_recurring_disabled")
-        if gate_name in {ReleaseGateName.STRIPE_REFUND, ReleaseGateName.YOOKASSA_REFUND}:
-            if not settings.refunds_enabled:
-                blockers.append("refunds_disabled")
+        if gate_name in {
+            ReleaseGateName.STRIPE_REFUND,
+            ReleaseGateName.YOOKASSA_REFUND,
+        } and not settings.refunds_enabled:
+            blockers.append("refunds_disabled")
         if gate_name is ReleaseGateName.OPENAI_FOLLOWUP:
             if settings.llm_provider != "openai":
                 blockers.append("openai_provider_required")
@@ -273,34 +297,45 @@ class ReleaseReadinessService:
                 blockers.append("openai_model_missing")
         return sorted(set(blockers))
 
-    async def _schema_revision(self, session: AsyncSession) -> str | None:
+    @staticmethod
+    async def _schema_revision(session: AsyncSession) -> str | None:
         try:
-            values = list(
-                await session.scalars(text("SELECT version_num FROM alembic_version ORDER BY version_num"))
+            result = await session.execute(
+                text("SELECT version_num FROM alembic_version ORDER BY version_num")
             )
         except Exception:
             return None
-        return ",".join(str(value) for value in values) or None
+        values = [str(row[0]) for row in result]
+        return ",".join(values) or None
 
-    async def _financial_blockers(self, session: AsyncSession) -> dict[str, int]:
-        counts = {
-            "billing_jobs_manual_review": await self._status_count(
-                session, BillingJob, "manual_review"
-            ),
-            "billing_jobs_failed": await self._status_count(session, BillingJob, "failed"),
-            "billing_outbox_manual_review": await self._status_count(
-                session, BillingOutboxEvent, "manual_review"
-            ),
-            "billing_outbox_failed": await self._status_count(
-                session, BillingOutboxEvent, "failed"
-            ),
-            "payment_orders_manual_review": await self._status_count(
-                session, PaymentOrder, "manual_review"
-            ),
-            "refunds_manual_review": await self._status_count(
-                session, RefundRequest, "manual_review"
-            ),
-        }
+    @staticmethod
+    async def _financial_blockers(session: AsyncSession) -> dict[str, int]:
+        job_manual = await session.scalar(
+            select(func.count()).select_from(BillingJob).where(BillingJob.status == "manual_review")
+        )
+        job_failed = await session.scalar(
+            select(func.count()).select_from(BillingJob).where(BillingJob.status == "failed")
+        )
+        outbox_manual = await session.scalar(
+            select(func.count())
+            .select_from(BillingOutboxEvent)
+            .where(BillingOutboxEvent.status == "manual_review")
+        )
+        outbox_failed = await session.scalar(
+            select(func.count())
+            .select_from(BillingOutboxEvent)
+            .where(BillingOutboxEvent.status == "failed")
+        )
+        order_manual = await session.scalar(
+            select(func.count())
+            .select_from(PaymentOrder)
+            .where(PaymentOrder.status == "manual_review")
+        )
+        refund_manual = await session.scalar(
+            select(func.count())
+            .select_from(RefundRequest)
+            .where(RefundRequest.status == "manual_review")
+        )
         missing_ledger = await session.scalar(
             select(func.count())
             .select_from(RefundRequest)
@@ -327,22 +362,29 @@ class ReleaseReadinessService:
                 ),
             )
         )
-        inconsistent_reservations = await session.scalar(
+        reservation_mismatch = await session.scalar(
             select(func.count())
             .select_from(CreditReservation)
             .join(RefundRequest, RefundRequest.id == CreditReservation.refund_request_id)
             .where(
-                ((RefundRequest.status == "succeeded") & (CreditReservation.status != "consumed"))
-                | ((RefundRequest.status == "failed") & (CreditReservation.status != "released"))
+                (
+                    (RefundRequest.status == "succeeded")
+                    & (CreditReservation.status != "consumed")
+                )
+                | (
+                    (RefundRequest.status == "failed")
+                    & (CreditReservation.status != "released")
+                )
             )
         )
-        counts["succeeded_refunds_without_ledger"] = int(missing_ledger or 0)
-        counts["refund_ledger_without_success"] = int(orphan_ledger or 0)
-        counts["refund_reservation_state_mismatch"] = int(inconsistent_reservations or 0)
-        return counts
-
-    @staticmethod
-    async def _status_count(session: AsyncSession, model: type[object], status: str) -> int:
-        column = getattr(model, "status")
-        value = await session.scalar(select(func.count()).select_from(model).where(column == status))
-        return int(value or 0)
+        return {
+            "billing_jobs_manual_review": int(job_manual or 0),
+            "billing_jobs_failed": int(job_failed or 0),
+            "billing_outbox_manual_review": int(outbox_manual or 0),
+            "billing_outbox_failed": int(outbox_failed or 0),
+            "payment_orders_manual_review": int(order_manual or 0),
+            "refunds_manual_review": int(refund_manual or 0),
+            "succeeded_refunds_without_ledger": int(missing_ledger or 0),
+            "refund_ledger_without_success": int(orphan_ledger or 0),
+            "refund_reservation_state_mismatch": int(reservation_mismatch or 0),
+        }
