@@ -101,7 +101,9 @@ def test_refund_ledger_index_round_trip_when_no_refunds_exist() -> None:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _HEAD
         subprocess.run(("alembic", "downgrade", _PARENT), check=True, env=environment)
-        assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _PARENT
+        assert (
+            asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _PARENT
+        )
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         _insert_refunded_purchase(url, schema)
         assert (
