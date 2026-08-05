@@ -142,10 +142,6 @@ class SubscriptionGateway(Protocol):
         self, request: CreateSubscriptionCheckout
     ) -> HostedSubscriptionCheckout: ...
 
-    async def renew_subscription(
-        self, request: RenewSubscription
-    ) -> SubscriptionProviderFact: ...
-
     async def fetch_subscription_event(
         self, event_type: str, object_id: str
     ) -> SubscriptionProviderFact: ...
@@ -155,3 +151,9 @@ class SubscriptionGateway(Protocol):
     async def cancel_subscription(self, subscription_id: str) -> SubscriptionStateFact: ...
 
     async def resume_subscription(self, subscription_id: str) -> SubscriptionStateFact: ...
+
+
+class MerchantManagedSubscriptionGateway(SubscriptionGateway, Protocol):
+    async def renew_subscription(
+        self, request: RenewSubscription
+    ) -> SubscriptionProviderFact: ...
