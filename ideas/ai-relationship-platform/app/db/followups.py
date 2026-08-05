@@ -4,7 +4,6 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    DDL,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -12,11 +11,13 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     String,
+    Table,
     UniqueConstraint,
     event,
     func,
     text,
 )
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -84,32 +85,38 @@ class FollowUpQuestion(Base):
     )
 
 
-_PURGE_FUNCTION = DDL(
-    """
-    CREATE OR REPLACE FUNCTION purge_analysis_followup_on_delete()
-    RETURNS trigger AS $$
-    BEGIN
-      IF NEW.status = 'deleted' AND OLD.status IS DISTINCT FROM 'deleted' THEN
-        DELETE FROM analysis_followups WHERE analysis_id = NEW.id;
-      END IF;
-      RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql
-    """
-)
-_DROP_PURGE_TRIGGER = DDL(
-    "DROP TRIGGER IF EXISTS trg_purge_analysis_followup_on_delete ON analyses"
-)
-_CREATE_PURGE_TRIGGER = DDL(
-    """
-    CREATE TRIGGER trg_purge_analysis_followup_on_delete
-    AFTER UPDATE OF status ON analyses
-    FOR EACH ROW EXECUTE FUNCTION purge_analysis_followup_on_delete()
-    """
-)
-_DROP_PURGE_FUNCTION = DDL("DROP FUNCTION IF EXISTS purge_analysis_followup_on_delete()")
+def _create_purge_trigger(_: Table, connection: Connection, **__: object) -> None:
+    connection.exec_driver_sql(
+        """
+        CREATE OR REPLACE FUNCTION purge_analysis_followup_on_delete()
+        RETURNS trigger AS $$
+        BEGIN
+          IF NEW.status = 'deleted' AND OLD.status IS DISTINCT FROM 'deleted' THEN
+            DELETE FROM analysis_followups WHERE analysis_id = NEW.id;
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    connection.exec_driver_sql(
+        "DROP TRIGGER IF EXISTS trg_purge_analysis_followup_on_delete ON analyses"
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE TRIGGER trg_purge_analysis_followup_on_delete
+        AFTER UPDATE OF status ON analyses
+        FOR EACH ROW EXECUTE FUNCTION purge_analysis_followup_on_delete()
+        """
+    )
 
-for statement in (_PURGE_FUNCTION, _DROP_PURGE_TRIGGER, _CREATE_PURGE_TRIGGER):
-    event.listen(FollowUpQuestion.__table__, "after_create", statement)
-for statement in (_DROP_PURGE_TRIGGER, _DROP_PURGE_FUNCTION):
-    event.listen(FollowUpQuestion.__table__, "before_drop", statement)
+
+def _drop_purge_trigger(_: Table, connection: Connection, **__: object) -> None:
+    connection.exec_driver_sql(
+        "DROP TRIGGER IF EXISTS trg_purge_analysis_followup_on_delete ON analyses"
+    )
+    connection.exec_driver_sql("DROP FUNCTION IF EXISTS purge_analysis_followup_on_delete()")
+
+
+event.listen(FollowUpQuestion.__table__, "after_create", _create_purge_trigger)
+event.listen(FollowUpQuestion.__table__, "before_drop", _drop_purge_trigger)
