@@ -77,9 +77,7 @@ def create_dispatcher(
         SubscriptionCheckoutService(
             sessions, settings, billing_catalog, payments.subscription_gateways
         ),
-        SubscriptionManagementService(
-            sessions, settings, subscription_gateways, processor
-        ),
+        SubscriptionManagementService(sessions, settings, subscription_gateways, processor),
     )
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)
