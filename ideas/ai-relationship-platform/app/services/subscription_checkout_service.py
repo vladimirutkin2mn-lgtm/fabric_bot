@@ -167,9 +167,7 @@ class SubscriptionCheckoutService:
         await self._save(order_id, attempt, checkout)
         return SubscriptionCheckoutResult(order_id, token, checkout.url, "pending")
 
-    async def _save(
-        self, order_id: UUID, attempt: UUID, value: HostedSubscriptionCheckout
-    ) -> None:
+    async def _save(self, order_id: UUID, attempt: UUID, value: HostedSubscriptionCheckout) -> None:
         async with self._sessions.begin() as session:
             initial = await session.get(PaymentOrder, order_id)
             if initial is None:
