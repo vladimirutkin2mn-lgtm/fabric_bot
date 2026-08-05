@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
@@ -95,7 +96,7 @@ def test_release_gate_rows_are_immutable_and_block_downgrade() -> None:
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         attestation_id = _insert_attestation(url, schema)
-        with pytest.raises(Exception, match="append-only"):
+        with pytest.raises(DBAPIError, match="append-only"):
             asyncio.run(
                 _execute(
                     url,
@@ -109,8 +110,7 @@ def test_release_gate_rows_are_immutable_and_block_downgrade() -> None:
                 _scalar(
                     url,
                     schema,
-                    "SELECT status FROM release_gate_attestations "
-                    f"WHERE id='{attestation_id}'",
+                    f"SELECT status FROM release_gate_attestations WHERE id='{attestation_id}'",
                 )
             )
             == "passed"

@@ -83,8 +83,7 @@ def downgrade() -> None:
         raise RuntimeError("downgrade refused: release gate attestations contain audit history")
     op.execute(
         sa.text(
-            "DROP TRIGGER IF EXISTS trg_prevent_release_gate_mutation "
-            "ON release_gate_attestations"
+            "DROP TRIGGER IF EXISTS trg_prevent_release_gate_mutation ON release_gate_attestations"
         )
     )
     op.execute(sa.text("DROP FUNCTION IF EXISTS prevent_release_gate_mutation()"))

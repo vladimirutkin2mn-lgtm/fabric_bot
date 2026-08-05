@@ -94,7 +94,9 @@ class ReleaseReadinessService:
     ) -> None:
         self._sessions = sessions
         self._settings = settings
-        self._code_sha = (code_sha if code_sha is not None else os.getenv("RELEASE_CODE_SHA", "")).strip()
+        self._code_sha = (
+            code_sha if code_sha is not None else os.getenv("RELEASE_CODE_SHA", "")
+        ).strip()
         self._checklist_version = (
             checklist_version
             if checklist_version is not None
@@ -283,10 +285,14 @@ class ReleaseReadinessService:
                 blockers.append("subscriptions_disabled")
             if not settings.yookassa_recurring_enabled:
                 blockers.append("yookassa_recurring_disabled")
-        if gate_name in {
-            ReleaseGateName.STRIPE_REFUND,
-            ReleaseGateName.YOOKASSA_REFUND,
-        } and not settings.refunds_enabled:
+        if (
+            gate_name
+            in {
+                ReleaseGateName.STRIPE_REFUND,
+                ReleaseGateName.YOOKASSA_REFUND,
+            }
+            and not settings.refunds_enabled
+        ):
             blockers.append("refunds_disabled")
         if gate_name is ReleaseGateName.OPENAI_FOLLOWUP:
             if settings.llm_provider != "openai":
@@ -367,14 +373,8 @@ class ReleaseReadinessService:
             .select_from(CreditReservation)
             .join(RefundRequest, RefundRequest.id == CreditReservation.refund_request_id)
             .where(
-                (
-                    (RefundRequest.status == "succeeded")
-                    & (CreditReservation.status != "consumed")
-                )
-                | (
-                    (RefundRequest.status == "failed")
-                    & (CreditReservation.status != "released")
-                )
+                ((RefundRequest.status == "succeeded") & (CreditReservation.status != "consumed"))
+                | ((RefundRequest.status == "failed") & (CreditReservation.status != "released"))
             )
         )
         return {
