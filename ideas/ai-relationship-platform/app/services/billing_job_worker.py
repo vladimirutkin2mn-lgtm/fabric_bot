@@ -108,7 +108,7 @@ class BillingJobWorker:
         if job_type == "subscription_renewal":
             await self._process_subscription_renewal(job_id, claim_id, UUID(object_id))
             return
-        if job_type == "subscription_checkout_reconciliation":
+        if job_type == "subscription_checkout_reconcile":
             await self._process_subscription_checkout(job_id, claim_id, UUID(object_id))
             return
         if job_type == "webhook_processing":
@@ -359,7 +359,7 @@ class BillingJobWorker:
     @staticmethod
     async def _mark_related_manual(session: AsyncSession, job: BillingJob, code: str) -> None:
         order: PaymentOrder | None = None
-        if job.job_type in {"payment_reconciliation", "subscription_checkout_reconciliation"}:
+        if job.job_type in {"payment_reconciliation", "subscription_checkout_reconcile"}:
             order = await session.get(PaymentOrder, UUID(job.object_id), with_for_update=True)
         elif job.job_type == "webhook_processing":
             event = await session.get(
