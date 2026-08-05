@@ -144,9 +144,7 @@ async def test_partial_refund_uses_integer_minor_units_and_residual_on_last_refu
     async with refund_db.begin() as session:
         row = await session.scalar(select(RefundRequest).where(RefundRequest.id == first.refund.id))
         reservation = await session.scalar(
-            select(CreditReservation).where(
-                CreditReservation.refund_request_id == first.refund.id
-            )
+            select(CreditReservation).where(CreditReservation.refund_request_id == first.refund.id)
         )
         assert row is not None and reservation is not None
         row.status = "succeeded"
