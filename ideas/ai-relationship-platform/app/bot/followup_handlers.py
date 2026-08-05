@@ -8,7 +8,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.services.followup_service import FollowUpResult, FollowUpService, FollowUpStatus, FollowUpView
+from app.services.followup_service import (
+    FollowUpResult,
+    FollowUpService,
+    FollowUpStatus,
+    FollowUpView,
+)
 from app.services.onboarding import OnboardingService
 
 router = Router(name="followups")
@@ -45,9 +50,7 @@ async def _deliver(message: Message, view: FollowUpView) -> None:
     await message.answer(f"Ваш уточняющий вопрос:\n{view.question}")
     text = f"Ответ:\n{view.answer}"
     if view.limitations:
-        text += "\n\nЧто важно учитывать:\n" + "\n".join(
-            f"• {item}" for item in view.limitations
-        )
+        text += "\n\nЧто важно учитывать:\n" + "\n".join(f"• {item}" for item in view.limitations)
     if view.safety_high_risk:
         text += "\n\nВ ответе отдельно учтены риски безопасности."
     await message.answer(text, reply_markup=_done_keyboard(view.analysis_id))
