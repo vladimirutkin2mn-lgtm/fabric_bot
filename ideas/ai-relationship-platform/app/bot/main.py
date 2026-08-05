@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.bot.dependencies import OnboardingDependencyMiddleware
+from app.bot.followup_handlers import router as followup_router
 from app.bot.handlers import router
 from app.bot.observability import TelegramObservabilityMiddleware
 from app.bot.postgres_fsm import PostgresEventIsolation, PostgresFSMStorage
@@ -88,6 +89,7 @@ def create_dispatcher(
     dispatcher.callback_query.outer_middleware(rate_middleware)
     dispatcher.update.outer_middleware(TelegramObservabilityMiddleware(reporter))
     dispatcher.update.outer_middleware(dependency_middleware)
+    dispatcher.include_router(followup_router)
     dispatcher.include_router(refund_router)
     dispatcher.include_router(subscription_router)
     dispatcher.include_router(router)
