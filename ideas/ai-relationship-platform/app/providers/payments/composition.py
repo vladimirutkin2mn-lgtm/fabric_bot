@@ -6,9 +6,12 @@ from app.config import Settings
 from app.providers.payments.base import PaymentProvider, PaymentProviderName
 from app.providers.payments.gateway import OneTimePaymentGateway
 from app.providers.payments.mock import MockPaymentProvider
+from app.providers.payments.refund_gateway import RefundGateway
 from app.providers.payments.stripe_gateway import StripeGateway
+from app.providers.payments.stripe_refund_gateway import StripeRefundGateway
 from app.providers.payments.subscription_gateway import SubscriptionGateway
 from app.providers.payments.yookassa_gateway import YooKassaGateway
+from app.providers.payments.yookassa_refund_gateway import YooKassaRefundGateway
 from app.services.sensitive_content import AESGCMSensitiveContentCipher
 
 
@@ -17,6 +20,7 @@ class PaymentComponents:
     legacy: PaymentProvider | None
     gateways: dict[PaymentProviderName, OneTimePaymentGateway]
     subscription_gateways: dict[PaymentProviderName, SubscriptionGateway]
+    refund_gateways: dict[PaymentProviderName, RefundGateway]
 
 
 def create_payment_components(settings: Settings) -> PaymentComponents:
@@ -32,6 +36,7 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
         )
     gateways: dict[PaymentProviderName, OneTimePaymentGateway] = {}
     subscription_gateways: dict[PaymentProviderName, SubscriptionGateway] = {}
+    refund_gateways: dict[PaymentProviderName, RefundGateway] = {}
     if settings.stripe_enabled:
         stripe = StripeGateway(
             settings.stripe_secret_key.get_secret_value(),
@@ -41,6 +46,11 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
         gateways[PaymentProviderName.STRIPE] = stripe
         if settings.subscriptions_enabled:
             subscription_gateways[PaymentProviderName.STRIPE] = stripe
+        if settings.refunds_enabled:
+            refund_gateways[PaymentProviderName.STRIPE] = StripeRefundGateway(
+                settings.stripe_secret_key.get_secret_value(),
+                settings.provider_request_timeout_seconds,
+            )
     if settings.yookassa_enabled:
         yookassa = YooKassaGateway(
             settings.yookassa_shop_id.get_secret_value(),
@@ -52,4 +62,11 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
         gateways[PaymentProviderName.YOOKASSA] = yookassa
         if settings.subscriptions_enabled and settings.yookassa_recurring_enabled:
             subscription_gateways[PaymentProviderName.YOOKASSA] = yookassa
-    return PaymentComponents(legacy, gateways, subscription_gateways)
+        if settings.refunds_enabled:
+            refund_gateways[PaymentProviderName.YOOKASSA] = YooKassaRefundGateway(
+                settings.yookassa_shop_id.get_secret_value(),
+                settings.yookassa_secret_key.get_secret_value(),
+                settings.provider_request_timeout_seconds,
+                partial_refunds=not settings.yookassa_receipts_required,
+            )
+    return PaymentComponents(legacy, gateways, subscription_gateways, refund_gateways)
