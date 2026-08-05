@@ -3,7 +3,7 @@
 import asyncio
 import os
 import subprocess
-from typing import cast  # noqa: TC003
+from typing import cast
 from uuid import uuid4
 
 import pytest
