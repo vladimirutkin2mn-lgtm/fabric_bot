@@ -1,4 +1,4 @@
-"""Runnable payment jobs, reconciliation, and outbox worker."""
+"""Runnable payment jobs, reconciliation, subscription lifecycle, and outbox worker."""
 
 import asyncio
 import logging
@@ -16,6 +16,8 @@ from app.services.billing_outbox_service import BillingOutboxWorker
 from app.services.checkout_service import ReceiptContactCipher
 from app.services.payment_completion_service import PaymentCompletionService
 from app.services.payment_reconciliation_service import PaymentReconciliationSweeper
+from app.services.subscription_event_processor import SubscriptionEventProcessor
+from app.services.subscription_lifecycle import SubscriptionLifecycleService
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,14 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
     sessions = create_session_factory(engine)
     components = create_payment_components(resolved)
     gateways = {name.value: gateway for name, gateway in components.gateways.items()}
+    subscription_gateways = {
+        name.value: gateway for name, gateway in components.subscription_gateways.items()
+    }
     completion = PaymentCompletionService(sessions, resolved.app_env == "production")
+    lifecycle = SubscriptionLifecycleService(sessions)
+    subscription_processor = SubscriptionEventProcessor(
+        sessions, lifecycle, resolved.subscription_grace_period_days
+    )
     jobs = BillingJobWorker(
         sessions,
         gateways,
@@ -37,6 +46,8 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
         resolved.billing_worker_max_attempts,
         resolved.payment_public_base_url,
         ReceiptContactCipher(resolved.content_encryption_key.get_secret_value()),
+        subscription_gateways,
+        subscription_processor,
     )
     outbox = BillingOutboxWorker(
         sessions,
@@ -60,6 +71,12 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
             now = datetime.now(UTC)
             if now >= next_sweep:
                 await sweeper.enqueue_stale()
+                if resolved.subscriptions_enabled:
+                    await lifecycle.enqueue_due_renewals(now=now)
+                    await lifecycle.finalize_terminal_states(
+                        now=now,
+                        grace_period=timedelta(days=resolved.subscription_grace_period_days),
+                    )
                 next_sweep = now + timedelta(
                     seconds=resolved.billing_reconciliation_interval_seconds
                 )
