@@ -40,16 +40,12 @@ def _purchase_keyboard(rows: tuple[RefundPurchaseView, ...]) -> InlineKeyboardMa
                     f"{row.product_code}: {row.refundable_credits} кр. · "
                     f"{_money(row.refund_amount_minor, row.currency)}"
                 ),
-                callback_data=(
-                    f"refund:request:{row.payment_order_id}:{row.refundable_credits}"
-                ),
+                callback_data=(f"refund:request:{row.payment_order_id}:{row.refundable_credits}"),
             )
         ]
         for row in rows
     ]
-    buttons.append(
-        [InlineKeyboardButton(text="История возвратов", callback_data="refund:history")]
-    )
+    buttons.append([InlineKeyboardButton(text="История возвратов", callback_data="refund:history")])
     buttons.append([InlineKeyboardButton(text="Вернуться", callback_data="menu:balance")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
