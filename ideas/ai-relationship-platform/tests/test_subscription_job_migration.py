@@ -85,8 +85,7 @@ def test_subscription_job_constraint_round_trip_when_empty() -> None:
         asyncio.run(_execute(url, schema, "DELETE FROM billing_jobs"))
         subprocess.run(("alembic", "downgrade", _PARENT), check=True, env=environment)
         assert (
-            asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version"))
-            == _PARENT
+            asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _PARENT
         )
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         _insert_job(url, schema)
