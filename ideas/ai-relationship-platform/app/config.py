@@ -118,7 +118,9 @@ class Settings(BaseSettings):
             ),
         )
         if any(bool(price) != (amount is not None) for price, amount in subscription_pairs):
-            raise ValueError("Stripe subscription Price and expected amount must be configured together")
+            raise ValueError(
+                "Stripe subscription Price and expected amount must be configured together"
+            )
         if self.app_env != "production":
             return self
         encryption_key = self.content_encryption_key.get_secret_value().strip()
