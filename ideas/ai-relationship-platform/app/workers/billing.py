@@ -19,6 +19,7 @@ from app.services.billing_outbox_service import BillingOutboxWorker
 from app.services.checkout_service import ReceiptContactCipher
 from app.services.payment_completion_service import PaymentCompletionService
 from app.services.payment_reconciliation_service import PaymentReconciliationSweeper
+from app.services.refund_reconciliation_service import RefundReconciliationService
 from app.services.subscription_event_processor import SubscriptionEventProcessor
 from app.services.subscription_lifecycle import SubscriptionLifecycleService
 
@@ -35,6 +36,7 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
     subscription_gateways = {
         name.value: gateway for name, gateway in components.subscription_gateways.items()
     }
+    refund_gateways = {name.value: gateway for name, gateway in components.refund_gateways.items()}
     if resolved.yookassa_recurring_enabled:
         yookassa = components.subscription_gateways.get(PaymentProviderName.YOOKASSA)
         if not isinstance(yookassa, YooKassaGateway):
@@ -47,6 +49,10 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
     subscription_processor = SubscriptionEventProcessor(
         sessions, lifecycle, resolved.subscription_grace_period_days
     )
+    refund_processor = RefundReconciliationService(
+        sessions,
+        resolved.billing_pending_reconciliation_seconds,
+    )
     jobs = BillingJobWorker(
         sessions,
         gateways,
@@ -58,6 +64,8 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
         ReceiptContactCipher(resolved.content_encryption_key.get_secret_value()),
         subscription_gateways,
         subscription_processor,
+        refund_gateways,
+        refund_processor,
     )
     outbox = BillingOutboxWorker(
         sessions,

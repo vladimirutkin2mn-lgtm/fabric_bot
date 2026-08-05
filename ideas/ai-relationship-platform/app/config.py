@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     stripe_enabled: bool = False
     subscriptions_enabled: bool = False
     refunds_enabled: bool = False
+    billing_refund_window_days: int = Field(default=14, ge=1, le=365)
     yookassa_recurring_enabled: bool = False
     yookassa_shop_id: SecretStr = Field(default=SecretStr(""), repr=False)
     yookassa_secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
@@ -107,6 +108,8 @@ class Settings(BaseSettings):
             raise ValueError("YooKassa recurring requires YooKassa")
         if self.refunds_enabled and not self.billing_enabled:
             raise ValueError("refunds require billing")
+        if self.refunds_enabled and not (self.stripe_enabled or self.yookassa_enabled):
+            raise ValueError("refunds require an enabled production payment provider")
         subscription_pairs = (
             (
                 self.stripe_price_subscription_monthly_eur,
