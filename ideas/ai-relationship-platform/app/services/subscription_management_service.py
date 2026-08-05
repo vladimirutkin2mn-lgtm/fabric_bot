@@ -85,13 +85,14 @@ class SubscriptionManagementService:
             user = await session.get(User, user_id)
             if user is None or user.privacy_status != "active":
                 return None
-            return await session.scalar(
+            value: Subscription | None = await session.scalar(
                 select(Subscription).where(
                     Subscription.id == subscription_id,
                     Subscription.user_id == user_id,
                     Subscription.status.in_(_ACTIVE),
                 )
             )
+            return value
 
     @staticmethod
     def _view(value: Subscription) -> SubscriptionView:
