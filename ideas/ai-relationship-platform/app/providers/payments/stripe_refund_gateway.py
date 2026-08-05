@@ -85,14 +85,10 @@ class StripeRefundGateway:
             currency=currency,
             provider_status=provider_status,
             failure_code=(
-                str(_value(value, "failure_reason"))
-                if _value(value, "failure_reason")
-                else None
+                str(_value(value, "failure_reason")) if _value(value, "failure_reason") else None
             ),
             live_mode=(
-                bool(_value(value, "livemode"))
-                if _value(value, "livemode") is not None
-                else None
+                bool(_value(value, "livemode")) if _value(value, "livemode") is not None else None
             ),
         )
 
