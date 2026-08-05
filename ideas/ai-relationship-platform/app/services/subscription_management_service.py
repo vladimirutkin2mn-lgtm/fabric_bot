@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -86,14 +85,13 @@ class SubscriptionManagementService:
             user = await session.get(User, user_id)
             if user is None or user.privacy_status != "active":
                 return None
-            value = await session.scalar(
+            return await session.scalar(
                 select(Subscription).where(
                     Subscription.id == subscription_id,
                     Subscription.user_id == user_id,
                     Subscription.status.in_(_ACTIVE),
                 )
             )
-            return cast(Subscription | None, value)
 
     @staticmethod
     def _view(value: Subscription) -> SubscriptionView:
