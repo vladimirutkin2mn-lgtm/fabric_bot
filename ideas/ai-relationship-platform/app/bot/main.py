@@ -68,9 +68,7 @@ def create_dispatcher(
     subscription_gateways = {
         name.value: gateway for name, gateway in payments.subscription_gateways.items()
     }
-    refund_gateways = {
-        name.value: gateway for name, gateway in payments.refund_gateways.items()
-    }
+    refund_gateways = {name.value: gateway for name, gateway in payments.refund_gateways.items()}
     dependency_middleware = OnboardingDependencyMiddleware(
         sessions,
         analytics,
