@@ -11,6 +11,7 @@ from app.bot.handlers import router
 from app.bot.observability import TelegramObservabilityMiddleware
 from app.bot.postgres_fsm import PostgresEventIsolation, PostgresFSMStorage
 from app.bot.rate_limit import FixedWindowRateLimiter, RateLimitMiddleware
+from app.bot.refund_handlers import router as refund_router
 from app.bot.subscription_handlers import router as subscription_router
 from app.config import Settings, get_settings
 from app.db.session import create_engine, create_session_factory
@@ -24,6 +25,7 @@ from app.providers.llm.base import close_llm_client
 from app.providers.llm.factory import create_llm_client
 from app.providers.payments.composition import create_payment_components
 from app.services.checkout_service import CheckoutService
+from app.services.refund_service import RefundService
 from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
 from app.services.subscription_checkout_service import SubscriptionCheckoutService
 from app.services.subscription_event_processor import SubscriptionEventProcessor
@@ -66,6 +68,9 @@ def create_dispatcher(
     subscription_gateways = {
         name.value: gateway for name, gateway in payments.subscription_gateways.items()
     }
+    refund_gateways = {
+        name.value: gateway for name, gateway in payments.refund_gateways.items()
+    }
     dependency_middleware = OnboardingDependencyMiddleware(
         sessions,
         analytics,
@@ -78,12 +83,14 @@ def create_dispatcher(
             sessions, settings, billing_catalog, payments.subscription_gateways
         ),
         SubscriptionManagementService(sessions, settings, subscription_gateways, processor),
+        RefundService(sessions, settings, refund_gateways),
     )
     rate_middleware = RateLimitMiddleware(FixedWindowRateLimiter())
     dispatcher.message.outer_middleware(rate_middleware)
     dispatcher.callback_query.outer_middleware(rate_middleware)
     dispatcher.update.outer_middleware(TelegramObservabilityMiddleware(reporter))
     dispatcher.update.outer_middleware(dependency_middleware)
+    dispatcher.include_router(refund_router)
     dispatcher.include_router(subscription_router)
     dispatcher.include_router(router)
     dispatcher["database_engine"] = resolved_engine
