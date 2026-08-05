@@ -22,9 +22,7 @@ def base(**changes: object) -> Settings:
     ("price", "amount"),
     [("price_monthly_eur", None), ("", 990)],
 )
-def test_subscription_price_and_expected_amount_are_atomic(
-    price: str, amount: int | None
-) -> None:
+def test_subscription_price_and_expected_amount_are_atomic(price: str, amount: int | None) -> None:
     with pytest.raises(ValidationError):
         base(
             stripe_price_subscription_monthly_eur=price,
