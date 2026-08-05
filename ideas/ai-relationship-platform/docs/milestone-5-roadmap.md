@@ -1,8 +1,9 @@
 # Milestone 5 continuation roadmap
 
 The original `TASKS.md` Milestone 5 covered the credit ledger, free preview, mock checkout and
-paywall. Production billing was later split into smaller stages. M5A, M5A.1, M5B.1 and M5B.2
-are complete; the milestone is not fully complete until the stages below are delivered.
+paywall. Production billing was later split into smaller stages. All planned code slices through
+M5D are complete; the monetization milestone is not fully complete until the live staging gates
+below are executed against the exact deployed release.
 
 ## Completed stages
 
@@ -31,6 +32,14 @@ are complete; the milestone is not fully complete until the stages below are del
   - past-due recovery and grace-period terminal states;
   - cancellation/resume state recording;
   - idempotent renewal-job scheduler handoff.
+- [x] **M5C code — one paid follow-up question**
+  - encrypted exactly-once entitlement;
+  - structured-report-only prompt and repair boundary;
+  - Telegram intake, replay and privacy purge.
+- [x] **M5D code — auditable staging release gates**
+  - append-only gate attestations bound to code SHA, schema and checklist version;
+  - authenticated release-readiness endpoint;
+  - fail-closed provider configuration and financial consistency blockers.
 
 ## M5B.3 — subscriptions and renewals
 
@@ -42,14 +51,16 @@ are complete; the milestone is not fully complete until the stages below are del
   - webhook and scheduled reconciliation processing;
   - Telegram purchase, status, cancel-at-period-end and resume UX.
 - [ ] **Stripe sandbox acceptance**
-  - execute the checked-in provider test-mode checklist against a deployed staging environment.
+  - execute the checked-in provider test-mode checklist against a deployed staging environment;
+  - record `stripe_subscription_sandbox=passed` only after the real run succeeds.
 - [x] **M5B.3B.2 — YooKassa recurring-payment code**
   - explicit saved-payment-method consent and encrypted provider reference;
   - initial payment with `save_payment_method`;
   - merchant-initiated monthly charges with stable provider idempotency keys;
   - local cancel-at-period-end, recovery and Telegram RU/RUB UX.
 - [ ] **YooKassa sandbox acceptance**
-  - execute the checked-in provider test-mode checklist against a deployed staging environment.
+  - execute the checked-in provider test-mode checklist against a deployed staging environment;
+  - record `yookassa_subscription_sandbox=passed` only after the real run succeeds.
 
 M5B.3 is complete only when M5B.3A, both provider code slices and both provider sandbox
 checklists are complete.
@@ -128,9 +139,11 @@ grants, while allowing a user to stop future renewals safely.
   - Telegram `/refund` and `/refund_status` flow;
   - data-safe migration for multiple ledger entries tied to one purchase.
 - [ ] **Stripe refund sandbox acceptance**
-  - execute full, partial, pending, failure and replay scenarios in staging.
+  - execute full, partial, pending, failure and replay scenarios in staging;
+  - record `stripe_refund_sandbox=passed` only after the real run succeeds.
 - [ ] **YooKassa refund sandbox acceptance**
-  - execute full, supported partial, receipt-policy, pending, failure and replay scenarios.
+  - execute full, supported partial, receipt-policy, pending, failure and replay scenarios;
+  - record `yookassa_refund_sandbox=passed` only after the real run succeeds.
 
 M5B.4 is complete only after the code slice is merged and both provider refund sandbox
 checklists in `docs/provider-refunds.md` pass.
@@ -176,19 +189,22 @@ removed twice.
 
 ## M5C — one paid follow-up question
 
+### Delivery stages
+
+- [x] **M5C code — durable paid follow-up**
+  - one entitlement per owned paid full-access analysis;
+  - claim-fenced reserve/complete/release flow;
+  - encrypted question and answer history;
+  - structured-report-only prompt, repair and safety validation;
+  - Telegram intake, replay and deletion purge.
+- [ ] **OpenAI staging acceptance**
+  - exercise the flow with the configured staging model;
+  - verify response quality, repair, safety and retry behavior;
+  - record `openai_followup_staging=passed` only after the real run succeeds.
+
 ### Goal
 
 Honor the product promise that a full paid report includes one contextual follow-up question.
-
-### Deliverables
-
-- Durable follow-up entitlement tied to an owned full-access analysis.
-- Atomic reserve, consume and release transitions.
-- Versioned follow-up prompt using the structured report and bounded user question, not the raw
-  conversation unless explicitly required and still retained.
-- One repair retry and the same evidence/safety boundaries as the primary analysis.
-- Telegram question intake, answer delivery and stored history.
-- Technical failure releases the entitlement; successful completion consumes it exactly once.
 
 ### Acceptance criteria
 
@@ -197,12 +213,32 @@ Honor the product promise that a full paid report includes one contextual follow
 - Failure does not permanently consume the entitlement.
 - Deleted or preview-only analyses cannot use a follow-up.
 
+## M5D — auditable staging release gates
+
+### Code status
+
+- [x] append-only `release_gate_attestations` audit history;
+- [x] results bound to exact `RELEASE_CODE_SHA`, Alembic revision and checklist version;
+- [x] authenticated read/attest admin endpoints;
+- [x] provider test-configuration preflight without secret disclosure;
+- [x] financial blockers for failed/manual-review billing state and refund-ledger mismatches;
+- [x] schema/code/checklist drift marks prior passes stale;
+- [x] migration `20260805_16` prevents mutation and refuses destructive downgrade with history.
+
+The M5D control plane does not execute provider calls. Automated CI, fake transports and local
+runs are not acceptable evidence. Follow `docs/release-gates.md` and the provider runbooks.
+
+Limited production may start only when `GET /admin/release-readiness` returns
+`ready_for_limited_production=true` for the deployed staging release.
+
 ## Release sequence
 
-1. Deploy staging and execute both subscription provider sandbox acceptance checklists.
-2. Merge the M5B.4 provider-refund code after full CI.
-3. Execute both refund provider sandbox acceptance checklists with refunds disabled for users.
-4. Close M5B.3 and M5B.4 only after their sandbox gates pass.
-5. Complete and merge M5C.
-6. Enable limited production traffic only after reconciliation and manual-review paths are
-   exercised.
+1. Deploy the exact candidate commit to staging with `RELEASE_CODE_SHA` and the current
+   `RELEASE_CHECKLIST_VERSION`.
+2. Execute and attest the Stripe and YooKassa subscription sandbox checklists.
+3. Execute and attest the Stripe and YooKassa refund sandbox checklists while refunds remain
+   disabled for general users.
+4. Execute and attest the OpenAI paid-follow-up staging checklist.
+5. Resolve all failed/manual-review billing states and refund-ledger mismatches.
+6. Confirm `/admin/release-readiness` is true for the exact deployed code and schema.
+7. Enable limited production traffic and continue reconciliation/manual-review monitoring.
