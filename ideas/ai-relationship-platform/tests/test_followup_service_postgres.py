@@ -35,11 +35,9 @@ class AnalyticsRecorder:
         self.events.append((user_id, event, properties))
 
 
-class BlockingLLM:
+class SlowLLM:
     def __init__(self) -> None:
         self.calls = 0
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
 
     @staticmethod
     def payload() -> str:
@@ -55,8 +53,7 @@ class BlockingLLM:
 
     async def generate_analysis(self, request: LLMRequest) -> LLMCompletion:
         self.calls += 1
-        self.started.set()
-        await self.release.wait()
+        await asyncio.sleep(0.2)
         return LLMCompletion(self.payload(), "fake", "fake-model", "request-1", 10, 20, 30)
 
 
@@ -133,7 +130,7 @@ async def paid_analysis(
 
 
 def service(
-    sessions: async_sessionmaker[AsyncSession], llm: BlockingLLM | SequenceLLM
+    sessions: async_sessionmaker[AsyncSession], llm: SlowLLM | SequenceLLM
 ) -> FollowUpService:
     return FollowUpService(
         sessions,
@@ -150,23 +147,17 @@ async def test_concurrent_requests_make_one_llm_call_and_consume_once(
     followup_db: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id, analysis_id = await paid_analysis(followup_db)
-    llm = BlockingLLM()
+    llm = SlowLLM()
     followups = service(followup_db, llm)
-    tasks = [
-        asyncio.create_task(followups.ask(analysis_id, user_id, "Что мне написать дальше?"))
-        for _ in range(10)
-    ]
-    try:
-        await asyncio.wait_for(llm.started.wait(), timeout=5)
-        await asyncio.sleep(0.05)
-        llm.release.set()
-        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
-    finally:
-        llm.release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            *(
+                followups.ask(analysis_id, user_id, "Что мне написать дальше?")
+                for _ in range(10)
+            )
+        ),
+        timeout=10,
+    )
 
     assert llm.calls == 1
     assert {item.status for item in results} <= {
@@ -194,7 +185,7 @@ async def test_technical_failure_releases_entitlement_for_retry(
     followup_db: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id, analysis_id = await paid_analysis(followup_db)
-    llm = SequenceLLM(LLMTimeoutError(), BlockingLLM.payload())
+    llm = SequenceLLM(LLMTimeoutError(), SlowLLM.payload())
     followups = service(followup_db, llm)
 
     failed = await followups.ask(analysis_id, user_id, "Что делать?")
@@ -226,7 +217,7 @@ async def test_invalid_first_answer_is_repaired_without_raw_conversation(
         },
         ensure_ascii=False,
     )
-    llm = SequenceLLM(invalid, BlockingLLM.payload())
+    llm = SequenceLLM(invalid, SlowLLM.payload())
     completed = await service(followup_db, llm).ask(
         analysis_id, user_id, "Как спокойно уточнить ожидания?"
     )
@@ -259,7 +250,7 @@ async def test_expired_claim_is_reclaimed_and_stale_content_is_replaced(
                 reservation_count=1,
             )
         )
-    llm = SequenceLLM(BlockingLLM.payload())
+    llm = SequenceLLM(SlowLLM.payload())
     completed = await service(followup_db, llm).ask(analysis_id, user_id, "Новый вопрос")
     assert completed.status is FollowUpStatus.COMPLETED
     assert completed.view is not None and completed.view.question == "Новый вопрос"
@@ -274,7 +265,7 @@ async def test_preview_and_deleted_analyses_cannot_use_followup(
     followup_db: async_sessionmaker[AsyncSession],
 ) -> None:
     preview_user, preview_analysis = await paid_analysis(followup_db, access="preview")
-    llm = SequenceLLM(BlockingLLM.payload())
+    llm = SequenceLLM(SlowLLM.payload())
     followups = service(followup_db, llm)
     assert (
         await followups.ask(preview_analysis, preview_user, "Вопрос")
@@ -297,7 +288,7 @@ async def test_soft_delete_purges_encrypted_followup_history(
     followup_db: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id, analysis_id = await paid_analysis(followup_db)
-    llm = SequenceLLM(BlockingLLM.payload())
+    llm = SequenceLLM(SlowLLM.payload())
     followups = service(followup_db, llm)
     assert (
         await followups.ask(analysis_id, user_id, "Что дальше?")
