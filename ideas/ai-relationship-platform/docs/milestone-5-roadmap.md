@@ -116,6 +116,25 @@ grants, while allowing a user to stop future renewals safely.
 
 ## M5B.4 — provider monetary refunds
 
+### Delivery stages
+
+- [x] **M5B.4A — provider refund code**
+  - explicit purchase-window and unused-credit eligibility policy;
+  - user-locked credit reservation before provider I/O;
+  - Stripe and YooKassa adapters with stable idempotency;
+  - claim-fenced creation, pending reconciliation and authoritative terminal state;
+  - exactly-once negative `purchase_refund` ledger entry;
+  - reservation release on failure and consumption on success;
+  - Telegram `/refund` and `/refund_status` flow;
+  - data-safe migration for multiple ledger entries tied to one purchase.
+- [ ] **Stripe refund sandbox acceptance**
+  - execute full, partial, pending, failure and replay scenarios in staging.
+- [ ] **YooKassa refund sandbox acceptance**
+  - execute full, supported partial, receipt-policy, pending, failure and replay scenarios.
+
+M5B.4 is complete only after the code slice is merged and both provider refund sandbox
+checklists in `docs/provider-refunds.md` pass.
+
 ### Goal
 
 Return real money safely while preventing the associated purchased credits from being spent or
@@ -133,13 +152,27 @@ removed twice.
 - Telegram refund request/status flow and admin/manual-review operations.
 - Refund metrics, outbox notifications and operations runbook.
 
+### Financial and concurrency invariants
+
+- Spend and refund reservation use the same user-first lock order.
+- A purchase cannot be refunded for more credits or money than its original commercial snapshot.
+- Pending, unknown and manual-review states keep credits reserved.
+- Provider failure releases credits exactly once.
+- Provider success consumes the reservation and creates one negative ledger row.
+- Repeating provider creation uses the original idempotency key.
+- A refund of a subscription payment never silently cancels future renewal.
+
 ### Acceptance criteria
 
+- Ten concurrent requests for one purchase create one refund request, reservation and job.
 - Spend-versus-refund reservation races cannot make available balance negative.
-- Duplicate provider callbacks or reconciliation cannot produce two monetary or ledger refunds.
+- Duplicate reconciliation cannot produce two monetary or ledger refunds.
 - Unknown provider outcomes remain reserved and recover through reconciliation.
 - Provider failure releases credits exactly once.
 - Successful refund removes only the corresponding unused purchased credits.
+- Live-mode, payment, amount and currency mismatches enter manual review.
+- Migration upgrade, downgrade and upgrade pass, and downgrade refuses live refund ledger data.
+- Ruff, strict mypy, full pytest, Compose validation and production image build pass.
 
 ## M5C — one paid follow-up question
 
@@ -166,10 +199,10 @@ Honor the product promise that a full paid report includes one contextual follow
 
 ## Release sequence
 
-1. Merge M5B.3B.2 (YooKassa recurring-payment code).
-2. Deploy staging and execute both provider sandbox acceptance checklists.
-3. Close M5B.3 only after both sandbox gates pass.
-4. Complete and merge M5B.4.
+1. Deploy staging and execute both subscription provider sandbox acceptance checklists.
+2. Merge the M5B.4 provider-refund code after full CI.
+3. Execute both refund provider sandbox acceptance checklists with refunds disabled for users.
+4. Close M5B.3 and M5B.4 only after their sandbox gates pass.
 5. Complete and merge M5C.
 6. Enable limited production traffic only after reconciliation and manual-review paths are
    exercised.
