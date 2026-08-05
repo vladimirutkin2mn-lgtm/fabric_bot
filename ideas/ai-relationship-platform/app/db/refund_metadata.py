@@ -30,9 +30,7 @@ def configure_refund_metadata() -> None:
         )
 
     refund_table = RefundRequest.__table__
-    if "ix_refund_requests_payment_order_id" not in {
-        index.name for index in refund_table.indexes
-    }:
+    if "ix_refund_requests_payment_order_id" not in {index.name for index in refund_table.indexes}:
         Index(
             "ix_refund_requests_payment_order_id",
             refund_table.c.payment_order_id,
