@@ -18,7 +18,7 @@ from app.providers.payments.subscription_gateway import (
     SubscriptionStateFact,
 )
 from app.services.subscription_checkout_service import SubscriptionCheckoutService
-from tests.payment_postgres_helpers import payment_db
+from tests.payment_postgres_helpers import payment_db  # noqa: F401
 
 pytestmark = pytest.mark.postgres
 
@@ -84,7 +84,7 @@ async def create_user(sessions: async_sessionmaker[AsyncSession]) -> UUID:
 
 @pytest.mark.asyncio
 async def test_concurrent_subscription_checkout_has_one_provider_owner(
-    payment_db: async_sessionmaker[AsyncSession],
+    payment_db: async_sessionmaker[AsyncSession],  # noqa: F811
 ) -> None:
     gateway = FakeSubscriptionGateway()
     configured = settings()
@@ -129,7 +129,7 @@ async def test_concurrent_subscription_checkout_has_one_provider_owner(
 
 @pytest.mark.asyncio
 async def test_unknown_checkout_creates_one_durable_reconciliation_job(
-    payment_db: async_sessionmaker[AsyncSession],
+    payment_db: async_sessionmaker[AsyncSession],  # noqa: F811
 ) -> None:
     gateway = FakeSubscriptionGateway(unknown=True)
     configured = settings()
