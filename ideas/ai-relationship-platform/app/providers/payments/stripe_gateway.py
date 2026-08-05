@@ -267,6 +267,7 @@ class StripeGateway:
     ) -> SubscriptionProviderFact:
         metadata = _metadata(subscription)
         user_id = _uuid_metadata(metadata, "user_id")
+        initial_order_id = _uuid_metadata(metadata, "order_id")
         subscription_id = _required_text(_value(subscription, "id"), "subscription_id")
         invoice_id = _required_text(_value(invoice, "id"), "invoice_id")
         period_start = _required_datetime(
@@ -298,6 +299,7 @@ class StripeGateway:
             customer = _value(subscription, "customer") or _value(invoice, "customer")
             return PaidSubscriptionFact(
                 user_id=user_id,
+                initial_order_id=initial_order_id,
                 provider="stripe",
                 provider_customer_id=_required_text(
                     _value(customer, "id") if not isinstance(customer, str) else customer,
