@@ -18,7 +18,10 @@ _OLD_TYPES = (
     "'webhook_processing','subscription_renewal','payment_reconciliation',"
     "'refund_reconciliation'"
 )
-_NEW_TYPES = _OLD_TYPES[:-1] + ",'subscription_checkout_reconcile'"
+_NEW_TYPES = (
+    "'webhook_processing','subscription_renewal','payment_reconciliation',"
+    "'refund_reconciliation','subscription_checkout_reconcile'"
+)
 
 
 def _replace_constraint(values: str) -> None:
