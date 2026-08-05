@@ -516,7 +516,7 @@ class BillingJob(Base):
     __tablename__ = "billing_jobs"
     __table_args__ = (
         CheckConstraint(
-            "job_type IN ('webhook_processing','subscription_renewal','payment_reconciliation','refund_reconciliation')",
+            "job_type IN ('webhook_processing','subscription_renewal','payment_reconciliation','refund_reconciliation','subscription_checkout_reconcile')",
             name="ck_billing_jobs_type",
         ),
         CheckConstraint(

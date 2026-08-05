@@ -7,6 +7,7 @@ from app.providers.payments.base import PaymentProvider, PaymentProviderName
 from app.providers.payments.gateway import OneTimePaymentGateway
 from app.providers.payments.mock import MockPaymentProvider
 from app.providers.payments.stripe_gateway import StripeGateway
+from app.providers.payments.subscription_gateway import SubscriptionGateway
 from app.providers.payments.yookassa_gateway import YooKassaGateway
 
 
@@ -14,6 +15,7 @@ from app.providers.payments.yookassa_gateway import YooKassaGateway
 class PaymentComponents:
     legacy: PaymentProvider | None
     gateways: dict[PaymentProviderName, OneTimePaymentGateway]
+    subscription_gateways: dict[PaymentProviderName, SubscriptionGateway]
 
 
 def create_payment_components(settings: Settings) -> PaymentComponents:
@@ -28,12 +30,16 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
             settings.payment_webhook_max_age_seconds,
         )
     gateways: dict[PaymentProviderName, OneTimePaymentGateway] = {}
+    subscription_gateways: dict[PaymentProviderName, SubscriptionGateway] = {}
     if settings.stripe_enabled:
-        gateways[PaymentProviderName.STRIPE] = StripeGateway(
+        stripe = StripeGateway(
             settings.stripe_secret_key.get_secret_value(),
             settings.stripe_webhook_secret.get_secret_value(),
             settings.provider_request_timeout_seconds,
         )
+        gateways[PaymentProviderName.STRIPE] = stripe
+        if settings.subscriptions_enabled:
+            subscription_gateways[PaymentProviderName.STRIPE] = stripe
     if settings.yookassa_enabled:
         gateways[PaymentProviderName.YOOKASSA] = YooKassaGateway(
             settings.yookassa_shop_id.get_secret_value(),
@@ -41,4 +47,4 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
             settings.provider_request_timeout_seconds,
             settings.yookassa_vat_code,
         )
-    return PaymentComponents(legacy, gateways)
+    return PaymentComponents(legacy, gateways, subscription_gateways)

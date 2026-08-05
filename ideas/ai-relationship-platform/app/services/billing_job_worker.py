@@ -8,13 +8,19 @@ from uuid import UUID, uuid4
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import BillingJob, PaymentOrder, ProviderWebhookEvent
+from app.db.models import BillingJob, PaymentOrder, ProviderWebhookEvent, Subscription
 from app.providers.payments.base import PermanentProviderError, UnknownProviderOutcome
 from app.providers.payments.gateway import CreateCheckout, OneTimePaymentGateway
+from app.providers.payments.subscription_gateway import (
+    CreateSubscriptionCheckout,
+    SubscriptionGateway,
+)
 from app.services.checkout_service import CheckoutRejected, ReceiptContactCipher
 from app.services.payment_completion_service import PaymentCompletionService
+from app.services.subscription_event_processor import SubscriptionEventProcessor
 
 logger = logging.getLogger(__name__)
+_SUBSCRIPTION_EVENT_PREFIXES = ("invoice.", "customer.subscription.")
 
 
 class BillingJobWorker:
@@ -28,11 +34,15 @@ class BillingJobWorker:
         max_attempts: int = 10,
         public_base_url: str = "http://localhost:8000",
         receipt_cipher: ReceiptContactCipher | None = None,
+        subscription_gateways: dict[str, SubscriptionGateway] | None = None,
+        subscription_processor: SubscriptionEventProcessor | None = None,
     ) -> None:
         self._sessions, self._gateways, self._completion = sessions, gateways, completion
         self._lease, self._base, self._max = lease_seconds, retry_base_seconds, max_attempts
         self._public_base_url = public_base_url.rstrip("/")
         self._receipt_cipher = receipt_cipher
+        self._subscription_gateways = subscription_gateways or {}
+        self._subscription_processor = subscription_processor
 
     async def claim_one(self, worker_id: str) -> tuple[UUID, UUID] | None:
         now = datetime.now(UTC)
@@ -72,7 +82,11 @@ class BillingJobWorker:
             await self._retry(job_id, claim_id, "provider_unknown")
         except PermanentProviderError as exc:
             code = str(exc)
-            if code not in {"unsupported_provider", "corrupt_receipt_contact"}:
+            if code not in {
+                "unsupported_provider",
+                "corrupt_receipt_contact",
+                "subscription_processor_unavailable",
+            }:
                 code = "provider_validation"
             await self._manual(job_id, claim_id, code)
         except asyncio.CancelledError:
@@ -87,32 +101,150 @@ class BillingJobWorker:
             job = await session.get(BillingJob, job_id)
             if not job:
                 return
-            if job.job_type == "webhook_processing":
-                event = await session.get(ProviderWebhookEvent, UUID(job.object_id))
-                if not event:
-                    raise PermanentProviderError()
-                if event.status == "manual_review":
-                    raise PermanentProviderError("webhook_manual_review")
-                checkout_id = event.provider_object_id
-                order = await session.scalar(
-                    select(PaymentOrder).where(
-                        PaymentOrder.provider == event.provider,
-                        (PaymentOrder.provider_checkout_id == checkout_id)
-                        | (PaymentOrder.provider_payment_id == checkout_id),
-                    )
-                )
-            else:
-                order = await session.get(PaymentOrder, UUID(job.object_id))
+            job_type = job.job_type
+            object_id = job.object_id
+            provider = job.provider
+
+        if job_type == "subscription_renewal":
+            await self._process_subscription_renewal(job_id, claim_id, UUID(object_id))
+            return
+        if job_type == "subscription_checkout_reconcile":
+            await self._process_subscription_checkout(job_id, claim_id, UUID(object_id))
+            return
+        if job_type == "webhook_processing":
+            await self._process_webhook(job_id, claim_id, UUID(object_id))
+            return
+
+        async with self._sessions() as session:
+            order = await session.get(PaymentOrder, UUID(object_id))
             if not order:
                 raise PermanentProviderError()
-            provider, checkout = order.provider, order.provider_checkout_id
-            if provider not in self._gateways:
-                raise PermanentProviderError("unsupported_provider")
+            provider = order.provider
+            checkout = order.provider_checkout_id
             order_id = order.id
+        if provider not in self._gateways:
+            raise PermanentProviderError("unsupported_provider")
         if not checkout:
             checkout = await self._retry_checkout_creation(order_id)
         payment = await self._gateways[provider].fetch_payment(checkout)
         await self._completion.complete_claimed(job_id, claim_id, order_id, payment)
+
+    async def _process_webhook(self, job_id: UUID, claim_id: UUID, event_id: UUID) -> None:
+        async with self._sessions() as session:
+            event = await session.get(ProviderWebhookEvent, event_id)
+            if not event:
+                raise PermanentProviderError()
+            if event.status == "manual_review":
+                raise PermanentProviderError("webhook_manual_review")
+            order = await session.scalar(
+                select(PaymentOrder).where(
+                    PaymentOrder.provider == event.provider,
+                    (PaymentOrder.provider_checkout_id == event.provider_object_id)
+                    | (PaymentOrder.provider_payment_id == event.provider_object_id),
+                )
+            )
+            subscription_event = event.event_type.startswith(_SUBSCRIPTION_EVENT_PREFIXES) or (
+                order is not None and order.mode.startswith("subscription")
+            )
+            provider = event.provider
+            event_type = event.event_type
+            object_id = event.provider_object_id
+
+        if subscription_event:
+            gateway, processor = self._subscription_components(provider)
+            fact = await gateway.fetch_subscription_event(event_type, object_id)
+            await processor.apply(fact)
+            await self._complete_claim(job_id, claim_id, event_id)
+            return
+        if order is None:
+            raise PermanentProviderError()
+        if provider not in self._gateways:
+            raise PermanentProviderError("unsupported_provider")
+        checkout = order.provider_checkout_id
+        if not checkout:
+            checkout = await self._retry_checkout_creation(order.id)
+        payment = await self._gateways[provider].fetch_payment(checkout)
+        await self._completion.complete_claimed(job_id, claim_id, order.id, payment)
+
+    async def _process_subscription_renewal(
+        self, job_id: UUID, claim_id: UUID, subscription_id: UUID
+    ) -> None:
+        async with self._sessions() as session:
+            subscription = await session.get(Subscription, subscription_id)
+            if subscription is None:
+                raise PermanentProviderError()
+            provider = subscription.provider
+            provider_subscription_id = subscription.provider_subscription_id
+        gateway, processor = self._subscription_components(provider)
+        fact = await gateway.fetch_subscription(provider_subscription_id)
+        await processor.apply(fact)
+        await self._complete_claim(job_id, claim_id)
+
+    async def _process_subscription_checkout(
+        self, job_id: UUID, claim_id: UUID, order_id: UUID
+    ) -> None:
+        async with self._sessions() as session:
+            order = await session.get(PaymentOrder, order_id)
+            if order is None or order.mode != "subscription_initial":
+                raise PermanentProviderError()
+            provider = order.provider
+            checkout_id = order.provider_checkout_id
+        gateway, processor = self._subscription_components(provider)
+        if not checkout_id:
+            checkout_id = await self._retry_subscription_checkout_creation(order_id, gateway)
+        fact = await gateway.fetch_subscription_event("checkout.session.completed", checkout_id)
+        await processor.apply(fact)
+        await self._complete_claim(job_id, claim_id)
+
+    def _subscription_components(
+        self, provider: str
+    ) -> tuple[SubscriptionGateway, SubscriptionEventProcessor]:
+        gateway = self._subscription_gateways.get(provider)
+        if gateway is None:
+            raise PermanentProviderError("unsupported_provider")
+        if self._subscription_processor is None:
+            raise PermanentProviderError("subscription_processor_unavailable")
+        return gateway, self._subscription_processor
+
+    async def _complete_claim(
+        self, job_id: UUID, claim_id: UUID, event_id: UUID | None = None
+    ) -> bool:
+        """Complete only an unexpired claim; lifecycle application itself is idempotent."""
+        async with self._sessions.begin() as session:
+            job = await session.scalar(
+                select(BillingJob).where(BillingJob.id == job_id).with_for_update()
+            )
+            if (
+                job is None
+                or job.claim_id != claim_id
+                or job.status != "claimed"
+                or job.lease_until is None
+                or job.lease_until <= datetime.now(UTC)
+            ):
+                return False
+            event = (
+                await session.get(ProviderWebhookEvent, event_id, with_for_update=True)
+                if event_id is not None
+                else None
+            )
+            if event is not None and (
+                event.status == "manual_review"
+                or event.last_error_code == "duplicate_payload_mismatch"
+            ):
+                job.status = "manual_review"
+                job.last_error_code = "duplicate_payload_mismatch"
+                job.claim_id = None
+                job.lease_until = None
+                return False
+            job.status = "completed"
+            job.last_error_code = None
+            job.claim_id = None
+            job.lease_until = None
+            if event is not None:
+                event.status = "completed"
+                event.last_error_code = None
+                event.processed_at = datetime.now(UTC)
+            return True
 
     async def _retry_checkout_creation(self, order_id: UUID) -> str:
         async with self._sessions() as session:
@@ -159,6 +291,46 @@ class BillingJobWorker:
             order.encrypted_receipt_contact = None
         return hosted.checkout_id
 
+    async def _retry_subscription_checkout_creation(
+        self, order_id: UUID, gateway: SubscriptionGateway
+    ) -> str:
+        async with self._sessions() as session:
+            order = await session.get(PaymentOrder, order_id)
+            if order is None:
+                raise PermanentProviderError()
+            snapshot = order.commercial_snapshot
+            request = CreateSubscriptionCheckout(
+                user_id=order.user_id,
+                order_id=order.id,
+                product_code=order.product_code,
+                product_version=order.product_version,
+                amount_minor=order.amount_minor,
+                currency=order.currency,
+                credits=order.credits,
+                price_reference=str(snapshot.get("price_reference", "")),
+                market=order.market,
+                consent_version=str(snapshot.get("consent_version", "")),
+                idempotency_key=order.idempotency_key or "",
+                success_url=f"{self._public_base_url}/payments/return/{order.checkout_token}",
+                cancel_url=f"{self._public_base_url}/payments/return/{order.checkout_token}",
+            )
+        hosted = await gateway.create_subscription_checkout(request)
+        async with self._sessions.begin() as session:
+            order = await session.get(PaymentOrder, order_id, with_for_update=True)
+            if order is None:
+                raise PermanentProviderError()
+            if order.provider_checkout_id and order.provider_checkout_id != hosted.checkout_id:
+                order.status = "manual_review"
+                order.failure_code = "checkout_identity_mismatch"
+                raise PermanentProviderError("checkout_identity_mismatch")
+            order.provider_checkout_id = hosted.checkout_id
+            order.checkout_url = hosted.url
+            order.provider_status = hosted.status
+            order.checkout_expires_at = hosted.expires_at
+            order.provider_live_mode = hosted.live_mode
+            order.status = "pending"
+        return hosted.checkout_id
+
     async def _retry(self, job_id: UUID, claim_id: UUID, code: str) -> None:
         async with self._sessions.begin() as session:
             job = await session.get(BillingJob, job_id, with_for_update=True)
@@ -187,7 +359,7 @@ class BillingJobWorker:
     @staticmethod
     async def _mark_related_manual(session: AsyncSession, job: BillingJob, code: str) -> None:
         order: PaymentOrder | None = None
-        if job.job_type == "payment_reconciliation":
+        if job.job_type in {"payment_reconciliation", "subscription_checkout_reconcile"}:
             order = await session.get(PaymentOrder, UUID(job.object_id), with_for_update=True)
         elif job.job_type == "webhook_processing":
             event = await session.get(

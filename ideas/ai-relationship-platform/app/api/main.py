@@ -33,6 +33,10 @@ from app.services.checkout_service import CheckoutService
 from app.services.payment_completion_service import PaymentCompletionService
 from app.services.payment_service import PaymentService
 from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
+from app.services.subscription_checkout_service import SubscriptionCheckoutService
+from app.services.subscription_event_processor import SubscriptionEventProcessor
+from app.services.subscription_lifecycle import SubscriptionLifecycleService
+from app.services.subscription_management_service import SubscriptionManagementService
 from app.services.telegram_update_inbox import TelegramUpdateInboxService
 from app.services.webhook_inbox_service import WebhookInboxService
 
@@ -53,6 +57,7 @@ def create_app(
     resolved_engine = engine or create_engine(str(resolved_settings.database_url))
     sessions = create_session_factory(resolved_engine)
     catalog = ProductCatalog(resolved_settings)
+    billing_catalog = BillingCatalog(resolved_settings)
     payments = create_payment_components(resolved_settings)
     analytics = create_analytics_client(sessions, resolved_observability)
     reporter = (
@@ -60,6 +65,13 @@ def create_app(
         if resolved_observability.error_reporting_backend == "logging"
         else NoOpErrorReporter()
     )
+    subscription_lifecycle = SubscriptionLifecycleService(sessions)
+    subscription_processor = SubscriptionEventProcessor(
+        sessions, subscription_lifecycle, resolved_settings.subscription_grace_period_days
+    )
+    subscription_gateways = {
+        name.value: gateway for name, gateway in payments.subscription_gateways.items()
+    }
 
     resolved_bot: Bot | None = None
     telegram_inbox: TelegramUpdateInboxService | None = None
@@ -122,8 +134,20 @@ def create_app(
         else None
     )
     application.state.payment_gateways = payments.gateways
+    application.state.subscription_gateways = payments.subscription_gateways
     application.state.checkout_service = CheckoutService(
-        sessions, resolved_settings, BillingCatalog(resolved_settings), payments.gateways
+        sessions, resolved_settings, billing_catalog, payments.gateways
+    )
+    application.state.subscription_checkout_service = SubscriptionCheckoutService(
+        sessions, resolved_settings, billing_catalog, payments.subscription_gateways
+    )
+    application.state.subscription_lifecycle_service = subscription_lifecycle
+    application.state.subscription_event_processor = subscription_processor
+    application.state.subscription_management_service = SubscriptionManagementService(
+        sessions,
+        resolved_settings,
+        subscription_gateways,
+        subscription_processor,
     )
     application.state.payment_completion_service = PaymentCompletionService(
         sessions, resolved_settings.app_env == "production"

@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     stripe_amount_analysis_pack_5_usd_minor: int | None = Field(default=None, gt=0)
     stripe_price_subscription_monthly_eur: str = ""
     stripe_price_subscription_monthly_usd: str = ""
+    stripe_amount_subscription_monthly_eur_minor: int | None = Field(default=None, gt=0)
+    stripe_amount_subscription_monthly_usd_minor: int | None = Field(default=None, gt=0)
     billing_worker_lease_seconds: int = Field(default=60, gt=0)
     billing_worker_max_attempts: int = Field(default=10, ge=1)
     billing_retry_base_seconds: int = Field(default=30, gt=0)
@@ -105,6 +107,20 @@ class Settings(BaseSettings):
             raise ValueError("YooKassa recurring requires YooKassa")
         if self.refunds_enabled and not self.billing_enabled:
             raise ValueError("refunds require billing")
+        subscription_pairs = (
+            (
+                self.stripe_price_subscription_monthly_eur,
+                self.stripe_amount_subscription_monthly_eur_minor,
+            ),
+            (
+                self.stripe_price_subscription_monthly_usd,
+                self.stripe_amount_subscription_monthly_usd_minor,
+            ),
+        )
+        if any(bool(price) != (amount is not None) for price, amount in subscription_pairs):
+            raise ValueError(
+                "Stripe subscription Price and expected amount must be configured together"
+            )
         if self.app_env != "production":
             return self
         encryption_key = self.content_encryption_key.get_secret_value().strip()
@@ -178,12 +194,13 @@ class Settings(BaseSettings):
             raise ValueError("Stripe one-time expected amounts are incomplete")
         if self.stripe_enabled and stripe_key.startswith(("sk_test_", "rk_test_")):
             raise ValueError("Stripe test credentials are forbidden in production")
+        configured_stripe_subscription = any(
+            bool(price) and amount is not None for price, amount in subscription_pairs
+        )
         if self.subscriptions_enabled and not (
-            self.stripe_price_subscription_monthly_eur
-            or self.stripe_price_subscription_monthly_usd
-            or self.yookassa_recurring_enabled
+            configured_stripe_subscription or self.yookassa_recurring_enabled
         ):
-            raise ValueError("subscriptions require a configured offer")
+            raise ValueError("subscriptions require a complete configured offer")
         return self
 
     def permits_new_checkout(self) -> bool:

@@ -21,6 +21,10 @@ STRIPE_PAYMENT_EVENTS = {
     "checkout.session.async_payment_succeeded",
     "checkout.session.async_payment_failed",
     "checkout.session.expired",
+    "invoice.paid",
+    "invoice.payment_failed",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
 }
 YOOKASSA_PAYMENT_EVENTS = {
     "payment.succeeded",

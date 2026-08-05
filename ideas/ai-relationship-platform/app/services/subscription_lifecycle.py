@@ -72,6 +72,7 @@ class PaidSubscriptionPeriod:
     period_end: datetime
     paid_at: datetime
     consent_version: str
+    initial_order_id: UUID | None = None
     live_mode: bool | None = None
 
 
@@ -250,7 +251,32 @@ class SubscriptionLifecycleService:
                 )
                 .with_for_update()
             )
-            if order is None:
+            if order is None and initial_period and value.initial_order_id is not None:
+                order = await session.scalar(
+                    select(PaymentOrder)
+                    .where(PaymentOrder.id == value.initial_order_id)
+                    .with_for_update()
+                )
+                if order is None:
+                    raise SubscriptionStateMismatch("initial subscription order missing")
+                self._verify_initial_order(order, user_id, value)
+                order.status = "completed"
+                order.provider_invoice_id = value.provider_invoice_id
+                order.provider_payment_id = value.provider_payment_id
+                order.subscription_id = subscription.id
+                order.billing_period = period_key
+                order.provider_status = "paid"
+                order.completed_at = paid_at
+                order.provider_live_mode = value.live_mode
+                order.checkout_creation_attempt_id = None
+                order.checkout_creation_started_at = None
+                order.failure_code = None
+                order.commercial_snapshot = {
+                    **order.commercial_snapshot,
+                    "subscription_id": str(subscription.id),
+                    "period_key": period_key,
+                }
+            elif order is None:
                 order = PaymentOrder(
                     user_id=user_id,
                     provider=value.provider,
@@ -286,15 +312,8 @@ class SubscriptionLifecycleService:
                 )
                 session.add(order)
                 await session.flush()
-            elif (
-                order.user_id != user_id
-                or order.subscription_id != subscription.id
-                or order.billing_period != period_key
-                or order.amount_minor != value.amount_minor
-                or order.currency != value.currency
-                or order.credits != value.credits
-            ):
-                raise SubscriptionStateMismatch("provider payment identity mismatch")
+            else:
+                self._verify_paid_order(order, user_id, subscription.id, period_key, value)
 
             transaction = await session.scalar(
                 select(CreditTransaction)
@@ -677,6 +696,52 @@ class SubscriptionLifecycleService:
             or subscription.product_version != value.product_version
         ):
             raise SubscriptionStateMismatch("subscription identity mismatch")
+
+    @staticmethod
+    def _verify_initial_order(
+        order: PaymentOrder,
+        user_id: UUID,
+        value: PaidSubscriptionPeriod,
+    ) -> None:
+        snapshot = order.commercial_snapshot
+        if (
+            order.user_id != user_id
+            or order.provider != value.provider
+            or order.product_code != value.product_code
+            or order.mode != "subscription_initial"
+            or order.market != value.market
+            or order.product_version != value.product_version
+            or order.amount_minor != value.amount_minor
+            or order.currency != value.currency
+            or order.credits != value.credits
+            or order.status not in {"creating", "pending", "completed"}
+            or order.provider_invoice_id not in {None, value.provider_invoice_id}
+            or order.provider_payment_id not in {None, value.provider_payment_id}
+            or order.subscription_id is not None
+            or str(snapshot.get("price_reference", "")) != value.price_reference
+            or str(snapshot.get("consent_version", "")) != value.consent_version
+        ):
+            raise SubscriptionStateMismatch("initial subscription order mismatch")
+
+    @staticmethod
+    def _verify_paid_order(
+        order: PaymentOrder,
+        user_id: UUID,
+        subscription_id: UUID,
+        period_key: str,
+        value: PaidSubscriptionPeriod,
+    ) -> None:
+        if (
+            order.user_id != user_id
+            or order.subscription_id != subscription_id
+            or order.billing_period != period_key
+            or order.amount_minor != value.amount_minor
+            or order.currency != value.currency
+            or order.credits != value.credits
+            or order.provider_invoice_id != value.provider_invoice_id
+            or order.provider_payment_id != value.provider_payment_id
+        ):
+            raise SubscriptionStateMismatch("provider payment identity mismatch")
 
     @staticmethod
     def _verify_paid_period(

@@ -1,4 +1,5 @@
 """Server-owned product catalog; callbacks and webhooks never define value."""
+# ruff: noqa: RUF001
 
 from dataclasses import dataclass
 from enum import StrEnum
@@ -25,6 +26,11 @@ class Product:
 class ProductCatalog:
     def __init__(self, settings: Settings) -> None:
         cost = settings.analysis_price_credits
+        subscription_title = (
+            "Месячная подписка с автопродлением"
+            if settings.subscriptions_enabled
+            else "Месячный запас кредитов (без автопродления)"
+        )
         self._products = {
             ProductCode.ANALYSIS_SINGLE: Product(
                 ProductCode.ANALYSIS_SINGLE,
@@ -42,10 +48,11 @@ class ProductCatalog:
             ),
             ProductCode.SUBSCRIPTION_MONTHLY: Product(
                 ProductCode.SUBSCRIPTION_MONTHLY,
-                "Месячный запас кредитов (без автопродления)",
+                subscription_title,
                 settings.product_subscription_monthly_credits,
                 settings.product_subscription_monthly_price_minor,
                 settings.payment_currency,
+                recurring=settings.subscriptions_enabled,
             ),
         }
 
