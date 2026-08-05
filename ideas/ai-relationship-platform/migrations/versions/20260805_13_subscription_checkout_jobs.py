@@ -23,8 +23,30 @@ _NEW_TYPES = (
 )
 
 
+def _job_type_constraint_name() -> str:
+    bind = op.get_bind()
+    constraint_name = bind.scalar(
+        sa.text(
+            "SELECT constraint_row.conname "
+            "FROM pg_constraint AS constraint_row "
+            "JOIN pg_class AS table_row ON table_row.oid = constraint_row.conrelid "
+            "JOIN pg_namespace AS schema_row ON schema_row.oid = table_row.relnamespace "
+            "WHERE schema_row.nspname = current_schema() "
+            "AND table_row.relname = 'billing_jobs' "
+            "AND constraint_row.contype = 'c' "
+            "AND pg_get_constraintdef(constraint_row.oid) LIKE '%job_type%' "
+            "ORDER BY constraint_row.conname LIMIT 1"
+        )
+    )
+    if not isinstance(constraint_name, str):
+        raise RuntimeError("billing_jobs job_type check constraint was not found")
+    return constraint_name
+
+
 def _replace_constraint(values: str) -> None:
-    op.drop_constraint("ck_billing_jobs_type", "billing_jobs", type_="check")
+    bind = op.get_bind()
+    quoted_name = bind.dialect.identifier_preparer.quote(_job_type_constraint_name())
+    op.execute(sa.text(f"ALTER TABLE billing_jobs DROP CONSTRAINT {quoted_name}"))
     op.create_check_constraint(
         "ck_billing_jobs_type",
         "billing_jobs",
