@@ -47,9 +47,7 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
             settings.yookassa_secret_key.get_secret_value(),
             settings.provider_request_timeout_seconds,
             settings.yookassa_vat_code,
-            AESGCMSensitiveContentCipher(
-                settings.content_encryption_key.get_secret_value()
-            ),
+            AESGCMSensitiveContentCipher(settings.content_encryption_key.get_secret_value()),
         )
         gateways[PaymentProviderName.YOOKASSA] = yookassa
         if settings.subscriptions_enabled and settings.yookassa_recurring_enabled:
