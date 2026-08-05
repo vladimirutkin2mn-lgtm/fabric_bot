@@ -24,6 +24,7 @@ from app.services.monetized_analysis import MonetizedAnalysisService
 from app.services.onboarding import OnboardingService
 from app.services.payment_service import PaymentService
 from app.services.preview_entitlement import PreviewEntitlementService
+from app.services.refund_service import RefundService
 from app.services.report_renderer import ReportRenderer
 from app.services.report_service import ReportService
 from app.services.sensitive_content import AESGCMSensitiveContentCipher, decode_configured_key
@@ -45,6 +46,7 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
         checkout_service: CheckoutService,
         subscription_checkout: SubscriptionCheckoutService | None = None,
         subscriptions: SubscriptionManagementService | None = None,
+        refunds: RefundService | None = None,
     ) -> None:
         self._sessions = sessions
         self._analytics = analytics
@@ -54,6 +56,7 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
         self._checkout_service = checkout_service
         self._subscription_checkout = subscription_checkout
         self._subscriptions = subscriptions
+        self._refunds = refunds
 
     async def __call__(
         self,
@@ -105,6 +108,7 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
             data["checkout"] = self._checkout_service
             data["subscription_checkout"] = self._subscription_checkout
             data["subscriptions"] = self._subscriptions
+            data["refunds"] = self._refunds
             data["billing_settings"] = self._settings
             data["monetized"] = MonetizedAnalysisService(
                 self._sessions,
