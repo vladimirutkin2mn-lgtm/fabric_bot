@@ -183,9 +183,7 @@ class BillingJobWorker:
         payment = await self._gateways[provider].fetch_payment(checkout)
         await self._completion.complete_claimed(job_id, claim_id, order.id, payment)
 
-    async def _process_refund(
-        self, job_id: UUID, claim_id: UUID, refund_request_id: UUID
-    ) -> None:
+    async def _process_refund(self, job_id: UUID, claim_id: UUID, refund_request_id: UUID) -> None:
         async with self._sessions() as session:
             refund = await session.get(RefundRequest, refund_request_id)
             if refund is None:
