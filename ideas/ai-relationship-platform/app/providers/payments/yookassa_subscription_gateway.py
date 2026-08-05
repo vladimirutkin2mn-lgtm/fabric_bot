@@ -1,5 +1,6 @@
 """Merchant-managed YooKassa subscription orchestration for the billing worker."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -35,7 +36,13 @@ class YooKassaSubscriptionGateway:
     async def create_subscription_checkout(
         self, request: CreateSubscriptionCheckout
     ) -> HostedSubscriptionCheckout:
-        return await self._gateway.create_subscription_checkout(request)
+        recurring_request = replace(
+            request,
+            receipt_contact=request.receipt_contact
+            or self._settings.yookassa_receipt_email
+            or None,
+        )
+        return await self._gateway.create_subscription_checkout(recurring_request)
 
     async def renew_subscription(self, request: RenewSubscription) -> SubscriptionProviderFact:
         return await self._gateway.renew_subscription(request)
