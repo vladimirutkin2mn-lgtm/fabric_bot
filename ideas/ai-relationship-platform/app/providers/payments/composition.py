@@ -9,6 +9,7 @@ from app.providers.payments.mock import MockPaymentProvider
 from app.providers.payments.stripe_gateway import StripeGateway
 from app.providers.payments.subscription_gateway import SubscriptionGateway
 from app.providers.payments.yookassa_gateway import YooKassaGateway
+from app.services.sensitive_content import AESGCMSensitiveContentCipher
 
 
 @dataclass(frozen=True)
@@ -41,10 +42,16 @@ def create_payment_components(settings: Settings) -> PaymentComponents:
         if settings.subscriptions_enabled:
             subscription_gateways[PaymentProviderName.STRIPE] = stripe
     if settings.yookassa_enabled:
-        gateways[PaymentProviderName.YOOKASSA] = YooKassaGateway(
+        yookassa = YooKassaGateway(
             settings.yookassa_shop_id.get_secret_value(),
             settings.yookassa_secret_key.get_secret_value(),
             settings.provider_request_timeout_seconds,
             settings.yookassa_vat_code,
+            AESGCMSensitiveContentCipher(
+                settings.content_encryption_key.get_secret_value()
+            ),
         )
+        gateways[PaymentProviderName.YOOKASSA] = yookassa
+        if settings.subscriptions_enabled and settings.yookassa_recurring_enabled:
+            subscription_gateways[PaymentProviderName.YOOKASSA] = yookassa
     return PaymentComponents(legacy, gateways, subscription_gateways)
