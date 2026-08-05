@@ -3,6 +3,7 @@
 import asyncio
 import os
 import subprocess
+from typing import cast  # noqa: TC003
 from uuid import uuid4
 
 import pytest
@@ -28,8 +29,7 @@ async def _scalar(url: str, schema: str, statement: str) -> object | None:
     engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
     try:
         async with engine.connect() as connection:
-            result: object | None = await connection.scalar(text(statement))
-            return result
+            return cast(object | None, await connection.scalar(text(statement)))
     finally:
         await engine.dispose()
 
