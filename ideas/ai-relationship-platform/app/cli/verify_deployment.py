@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import cast
@@ -29,7 +30,7 @@ class VerificationCheck:
 
 
 def api_origin(webhook_url: str) -> str:
-    """Return the HTTPS origin for an already validated Telegram webhook URL."""
+    """Return the HTTP(S) origin for an already validated Telegram webhook URL."""
     parsed = urlsplit(webhook_url)
     if (
         parsed.scheme not in {"http", "https"}
@@ -89,10 +90,17 @@ class DeploymentVerifier:
         self,
         method: str,
         url: str,
-        **kwargs: object,
+        *,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> httpx.Response | None:
         try:
-            return await self._client.request(method, url, **kwargs)
+            return await self._client.request(
+                method,
+                url,
+                content=content,
+                headers=headers,
+            )
         except httpx.HTTPError:
             return None
 
@@ -178,12 +186,12 @@ class DeploymentVerifier:
         result = cast(dict[str, object], result_object)
         configured_url = result.get("url")
         allowed = result.get("allowed_updates")
-        allowed_set = (
-            {item for item in allowed if isinstance(item, str)}
-            if isinstance(allowed, list)
-            else set()
-        )
-        allowed_valid = not allowed_set or {"message", "callback_query"}.issubset(allowed_set)
+        if allowed is None:
+            allowed_valid = True
+        elif isinstance(allowed, list) and all(isinstance(item, str) for item in allowed):
+            allowed_valid = {"message", "callback_query"}.issubset(cast(list[str], allowed))
+        else:
+            allowed_valid = False
         configuration_passed = (
             configured_url == self._settings.telegram_webhook_url and allowed_valid
         )
@@ -243,27 +251,31 @@ async def run(args: argparse.Namespace) -> int:
     """Load production configuration, execute checks, and return a shell exit code."""
     try:
         settings = get_settings()
+        timeout_seconds = float(args.timeout_seconds)
+        max_pending_updates = int(args.max_pending_updates)
+        recent_error_seconds = int(args.recent_error_seconds)
+        json_output = bool(args.json_output)
         if settings.app_env not in {"staging", "production"}:
             raise VerificationConfigurationError(
                 "deployment verification requires staging or production APP_ENV"
             )
-        if args.timeout_seconds <= 0:
+        if timeout_seconds <= 0:
             raise VerificationConfigurationError("timeout must be positive")
         async with httpx.AsyncClient(
-            timeout=args.timeout_seconds,
+            timeout=timeout_seconds,
             follow_redirects=False,
         ) as client:
             checks = await DeploymentVerifier(
                 settings,
                 client,
-                max_pending_updates=args.max_pending_updates,
-                recent_error_seconds=args.recent_error_seconds,
+                max_pending_updates=max_pending_updates,
+                recent_error_seconds=recent_error_seconds,
             ).verify()
-    except (ValidationError, ValueError, VerificationConfigurationError):
+    except (ValidationError, ValueError):
         print("[FAIL] configuration: deployment verification configuration is invalid")
         return 2
 
-    if args.json_output:
+    if json_output:
         print(json.dumps([asdict(check) for check in checks], ensure_ascii=True))
     else:
         for check in checks:
