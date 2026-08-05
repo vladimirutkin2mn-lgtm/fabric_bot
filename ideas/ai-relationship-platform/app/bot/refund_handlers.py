@@ -146,10 +146,20 @@ async def request_refund_callback(
     messages = {
         RefundRequestOutcome.DISABLED: "Возвраты временно отключены.",
         RefundRequestOutcome.NOT_FOUND: "Пользователь или покупка не найдены.",
-        RefundRequestOutcome.NOT_ELIGIBLE: "Эта покупка не подходит для автоматического возврата.",
-        RefundRequestOutcome.INVALID_UNITS: "Количество кредитов для возврата изменилось. Откройте /refund заново.",
-        RefundRequestOutcome.INSUFFICIENT_CREDITS: "Часть кредитов уже использована, поэтому автоматический возврат невозможен.",
-        RefundRequestOutcome.PARTIAL_UNSUPPORTED: "Для этой покупки доступен только полный возврат.",
-        RefundRequestOutcome.ALREADY_PENDING: "По этой покупке уже есть незавершённый запрос на возврат.",
+        RefundRequestOutcome.NOT_ELIGIBLE: (
+            "Эта покупка не подходит для автоматического возврата."
+        ),
+        RefundRequestOutcome.INVALID_UNITS: (
+            "Количество кредитов для возврата изменилось. Откройте /refund заново."
+        ),
+        RefundRequestOutcome.INSUFFICIENT_CREDITS: (
+            "Часть кредитов уже использована, поэтому автоматический возврат невозможен."
+        ),
+        RefundRequestOutcome.PARTIAL_UNSUPPORTED: (
+            "Для этой покупки доступен только полный возврат."
+        ),
+        RefundRequestOutcome.ALREADY_PENDING: (
+            "По этой покупке уже есть незавершённый запрос на возврат."
+        ),
     }
     await callback.message.answer(messages.get(result.outcome, "Возврат не удалось создать."))
