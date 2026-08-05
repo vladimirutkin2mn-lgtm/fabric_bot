@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
+_HEAD_REVISION = "20260805_13"
 
 
 async def _execute(url: str, schema: str, statement: str) -> None:
@@ -62,7 +63,7 @@ def test_subscription_period_migration_round_trip_when_empty() -> None:
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-            "20260805_12"
+            _HEAD_REVISION
         )
         assert (
             asyncio.run(
@@ -135,7 +136,7 @@ def test_subscription_period_downgrade_refuses_financial_state() -> None:
         assert failed.returncode != 0
         assert "downgrade refused" in failed.stderr
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == (
-            "20260805_12"
+            _HEAD_REVISION
         )
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
