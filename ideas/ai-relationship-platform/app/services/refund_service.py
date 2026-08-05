@@ -245,6 +245,7 @@ class RefundService:
                 idempotency_key=idempotency_key,
             )
             session.add(refund)
+            await session.flush()
             session.add(
                 CreditReservation(
                     user_id=user_id,
