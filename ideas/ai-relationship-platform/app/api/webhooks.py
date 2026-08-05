@@ -159,9 +159,7 @@ async def yookassa_webhook(request: Request) -> dict[str, str]:
             if provider_event_type == "payment.succeeded"
             else "invoice.payment_failed"
         )
-    event_id = hashlib.sha256(
-        f"yookassa:{provider_event_type}:{object_id}".encode()
-    ).hexdigest()
+    event_id = hashlib.sha256(f"yookassa:{provider_event_type}:{object_id}".encode()).hexdigest()
     await request.app.state.webhook_inbox.accept(
         "yookassa", event_id, event_type, object_id, hashlib.sha256(body).hexdigest()
     )
