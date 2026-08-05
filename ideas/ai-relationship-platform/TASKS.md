@@ -17,9 +17,9 @@ For every milestone:
 ## Current active continuation
 
 Milestones 0–8 describe the original MVP plan and their implemented vertical slices. Milestone 5
-was subsequently expanded into production billing stages. The original credit/paywall milestone,
-production billing foundation and production one-time payments are complete, but Milestone 5 is
-**not fully complete**.
+was subsequently expanded into production billing stages. All planned monetization code slices
+through M5D are complete, but Milestone 5 is **not fully complete** until the five live staging
+acceptance gates pass for the exact deployed release.
 
 The authoritative continuation checklist is
 [`docs/milestone-5-roadmap.md`](docs/milestone-5-roadmap.md):
@@ -28,13 +28,15 @@ The authoritative continuation checklist is
 - [x] M5A.1 — monotonic paid report access;
 - [x] M5B.1 — production billing foundation;
 - [x] M5B.2 — YooKassa/Stripe one-time payments;
-- [ ] **M5B.3 — subscriptions and renewals**;
-- [ ] **M5B.4 — provider monetary refunds**;
-- [ ] **M5C — one paid follow-up question**.
+- [ ] **M5B.3 — subscription code complete; Stripe and YooKassa sandbox gates open**;
+- [ ] **M5B.4 — refund code complete; Stripe and YooKassa sandbox gates open**;
+- [ ] **M5C — paid follow-up code complete; OpenAI staging gate open**;
+- [x] **M5D — auditable staging release-gate control plane**.
 
-Do not declare the monetization milestone complete until M5B.3, M5B.4 and M5C satisfy their
-acceptance criteria. The current implementation sequence is M5B.3 → M5B.4 → M5C → provider
-sandbox acceptance → limited production launch.
+Do not declare the monetization milestone complete based on CI, mock providers or local testing.
+Execute the five real staging procedures, record append-only evidence as described in
+[`docs/release-gates.md`](docs/release-gates.md), resolve all financial blockers and require
+`/admin/release-readiness` to return `ready_for_limited_production=true` before limited launch.
 
 ## Milestone 0 — Bootstrap the project
 
@@ -237,8 +239,9 @@ Create a monetizable flow with correct accounting and local testability.
 
 ### Production continuation
 
-The deliverables above cover M5A. Production-ready completion additionally requires M5B.1–M5B.4
-and M5C as defined in `docs/milestone-5-roadmap.md`. M5B.3 is the current active milestone.
+The deliverables above cover M5A. Production code through M5D is implemented. Production-ready
+completion now requires the five live staging acceptance gates and a true release-readiness
+snapshot as defined in `docs/milestone-5-roadmap.md` and `docs/release-gates.md`.
 
 ## Milestone 6 — Privacy, deletion, retention
 
