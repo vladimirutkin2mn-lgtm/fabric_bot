@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.config import Settings
+from app.db.models import User
 from app.domain.products import ProductCatalog
 from app.services.credits_service import CreditsService
 from app.services.onboarding import OnboardingService
@@ -98,7 +99,7 @@ async def _current_user_subscription(
     callback: CallbackQuery,
     onboarding: OnboardingService,
     subscriptions: SubscriptionManagementService | None,
-) -> tuple[object | None, SubscriptionView | None]:
+) -> tuple[User | None, SubscriptionView | None]:
     user = await onboarding.current_user(callback.from_user.id)
     current = (
         None if user is None or subscriptions is None else await subscriptions.current(user.id)
