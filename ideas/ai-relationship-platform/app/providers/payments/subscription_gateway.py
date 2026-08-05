@@ -6,7 +6,7 @@ cross this boundary. Gateways return only authoritative commercial and lifecycle
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, TypeAlias
+from typing import Protocol
 from uuid import UUID
 
 
@@ -85,7 +85,7 @@ class SubscriptionStateFact:
     canceled_at: datetime | None = None
 
 
-SubscriptionProviderFact: TypeAlias = (
+type SubscriptionProviderFact = (
     PaidSubscriptionFact | PastDueSubscriptionFact | SubscriptionStateFact
 )
 
