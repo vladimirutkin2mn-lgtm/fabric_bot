@@ -11,6 +11,8 @@ from app.db.session import create_engine, create_session_factory
 from app.logging import configure_logging
 from app.providers.analytics import DiscardingAnalyticsClient
 from app.providers.payments.composition import create_payment_components
+from app.providers.payments.yookassa_gateway import YooKassaGateway
+from app.providers.payments.yookassa_subscription_gateway import YooKassaSubscriptionGateway
 from app.services.billing_job_worker import BillingJobWorker
 from app.services.billing_outbox_service import BillingOutboxWorker
 from app.services.checkout_service import ReceiptContactCipher
@@ -32,6 +34,13 @@ async def run(settings: Settings | None = None, stop: asyncio.Event | None = Non
     subscription_gateways = {
         name.value: gateway for name, gateway in components.subscription_gateways.items()
     }
+    if resolved.yookassa_recurring_enabled:
+        yookassa = components.subscription_gateways.get("yookassa")
+        if not isinstance(yookassa, YooKassaGateway):
+            raise ValueError("YooKassa recurring gateway is unavailable")
+        subscription_gateways["yookassa"] = YooKassaSubscriptionGateway(
+            sessions, resolved, yookassa
+        )
     completion = PaymentCompletionService(sessions, resolved.app_env == "production")
     lifecycle = SubscriptionLifecycleService(sessions)
     subscription_processor = SubscriptionEventProcessor(
