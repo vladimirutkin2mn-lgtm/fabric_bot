@@ -20,6 +20,7 @@ from app.services.conversation_intake import ConversationIntakeService
 from app.services.conversation_parser import ConversationParser
 from app.services.credits_service import CreditsService
 from app.services.data_deletion import DataDeletionService
+from app.services.followup_service import FollowUpService
 from app.services.monetized_analysis import MonetizedAnalysisService
 from app.services.onboarding import OnboardingService
 from app.services.payment_service import PaymentService
@@ -117,6 +118,15 @@ class OnboardingDependencyMiddleware(BaseMiddleware):
                 analysis_service,
                 self._settings.analysis_price_credits,
                 self._analytics,
+            )
+            data["followups"] = FollowUpService(
+                self._sessions,
+                cipher,
+                self._llm,
+                self._analytics,
+                self._settings.llm_provider,
+                self._settings.llm_model,
+                max_repair_attempts=self._settings.llm_max_repair_attempts,
             )
             data["analysis_price"] = self._settings.analysis_price_credits
             deletion = DataDeletionService(session, self._analytics)

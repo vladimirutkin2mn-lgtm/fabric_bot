@@ -1,4 +1,4 @@
-"""Migration safety for purchase refund ledger entries."""
+"""PostgreSQL migration safety for the paid follow-up entitlement."""
 
 import asyncio
 import os
@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.postgres
 _HEAD = "20260805_15"
-_PARENT = "20260805_13"
+_PARENT = "20260805_14"
 
 
 async def _execute(url: str, schema: str, statement: str) -> None:
@@ -52,47 +52,44 @@ def _environment(url: str, schema: str) -> dict[str, str]:
 
 
 def _schema(url: str) -> str:
-    schema = f"refund_ledger_{uuid4().hex}"
+    schema = f"followup_{uuid4().hex}"
     asyncio.run(_execute(url, "public", f'CREATE SCHEMA "{schema}"'))
     return schema
 
 
-def _insert_refunded_purchase(url: str, schema: str) -> None:
-    user_id = uuid4()
-    order_id = uuid4()
-    purchase_id = uuid4()
-    refund_id = uuid4()
-    statements = (
-        "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) VALUES "
-        f"('{user_id}',{uuid4().int % 10**12},'Migration','active')",
-        "INSERT INTO payment_orders "
-        "(id,user_id,provider,product_code,status,credits,amount_minor,currency,checkout_token,"
-        "provider_payment_id,provider_status,completed_at,commercial_snapshot) VALUES "
-        f"('{order_id}','{user_id}','stripe','analysis_pack_5','completed',5,1000,'EUR',"
-        f"'{uuid4()}','payment-migration','succeeded',now(),'{{}}')",
-        "INSERT INTO credit_transactions "
-        "(id,user_id,type,amount,idempotency_key,payment_order_id,product_code,"
-        "external_payment_id,external_payment_provider) VALUES "
-        f"('{purchase_id}','{user_id}','purchase',5,'purchase:{order_id}','{order_id}',"
-        "'analysis_pack_5','payment-migration','stripe')",
-        "INSERT INTO refund_requests "
-        "(id,user_id,payment_order_id,provider,provider_refund_id,status,amount_minor,currency,"
-        "credit_units,reason,idempotency_key) VALUES "
-        f"('{refund_id}','{user_id}','{order_id}','stripe','refund-migration','succeeded',"
-        "1000,'EUR',5,'requested_by_customer','refund:migration')",
-        "INSERT INTO credit_transactions "
-        "(id,user_id,type,amount,idempotency_key,payment_order_id,product_code,"
-        "external_payment_id,external_payment_provider,original_purchase_transaction_id,"
-        "refund_request_id) VALUES "
-        f"('{uuid4()}','{user_id}','purchase_refund',-5,'purchase_refund:{refund_id}',"
-        f"'{order_id}','analysis_pack_5','refund-migration','stripe','{purchase_id}',"
-        f"'{refund_id}')",
+def _insert_available_followup(url: str, schema: str) -> tuple[str, str]:
+    user_id, analysis_id, followup_id = uuid4(), uuid4(), uuid4()
+    asyncio.run(
+        _execute(
+            url,
+            schema,
+            "INSERT INTO users (id,telegram_user_id,first_name,privacy_status) "
+            f"VALUES ('{user_id}',{uuid4().int % 10**12},'Migration','active')",
+        )
     )
-    for statement in statements:
-        asyncio.run(_execute(url, schema, statement))
+    asyncio.run(
+        _execute(
+            url,
+            schema,
+            "INSERT INTO analyses "
+            "(id,user_id,status,intake_step,source_type,message_count,character_count,"
+            "llm_attempt_count,report_access,cost_units) "
+            f"VALUES ('{analysis_id}','{user_id}','draft','complete','text',0,0,0,'none',0)",
+        )
+    )
+    asyncio.run(
+        _execute(
+            url,
+            schema,
+            "INSERT INTO analysis_followups "
+            "(id,analysis_id,user_id,status,prompt_version,reservation_count,llm_attempt_count) "
+            f"VALUES ('{followup_id}','{analysis_id}','{user_id}','available','followup_v1',0,0)",
+        )
+    )
+    return str(user_id), str(analysis_id)
 
 
-def test_refund_ledger_index_round_trip_when_no_refunds_exist() -> None:
+def test_followup_migration_round_trip_when_empty() -> None:
     url = _database_url()
     schema = _schema(url)
     environment = _environment(url, schema)
@@ -104,28 +101,17 @@ def test_refund_ledger_index_round_trip_when_no_refunds_exist() -> None:
             asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _PARENT
         )
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        _insert_refunded_purchase(url, schema)
-        assert (
-            asyncio.run(
-                _scalar(
-                    url,
-                    schema,
-                    "SELECT count(*) FROM credit_transactions WHERE payment_order_id IS NOT NULL",
-                )
-            )
-            == 2
-        )
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
 
-def test_refund_ledger_downgrade_refuses_live_purchase_refund() -> None:
+def test_followup_downgrade_refuses_live_entitlement_state() -> None:
     url = _database_url()
     schema = _schema(url)
     environment = _environment(url, schema)
     try:
         subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
-        _insert_refunded_purchase(url, schema)
+        _insert_available_followup(url, schema)
         failed = subprocess.run(
             ("alembic", "downgrade", _PARENT),
             env=environment,
@@ -135,15 +121,27 @@ def test_refund_ledger_downgrade_refuses_live_purchase_refund() -> None:
         assert failed.returncode != 0
         assert "downgrade refused" in failed.stderr
         assert asyncio.run(_scalar(url, schema, "SELECT version_num FROM alembic_version")) == _HEAD
-        assert (
-            asyncio.run(
-                _scalar(
-                    url,
-                    schema,
-                    "SELECT count(*) FROM credit_transactions WHERE type='purchase_refund'",
-                )
+        assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM analysis_followups")) == 1
+    finally:
+        asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+def test_soft_deleted_analysis_purges_followup_before_downgrade() -> None:
+    url = _database_url()
+    schema = _schema(url)
+    environment = _environment(url, schema)
+    try:
+        subprocess.run(("alembic", "upgrade", "head"), check=True, env=environment)
+        _, analysis_id = _insert_available_followup(url, schema)
+        asyncio.run(
+            _execute(
+                url,
+                schema,
+                "UPDATE analyses SET status='deleted',report_access='none',completed_at=NULL "
+                f"WHERE id='{analysis_id}'",
             )
-            == 1
         )
+        assert asyncio.run(_scalar(url, schema, "SELECT count(*) FROM analysis_followups")) == 0
+        subprocess.run(("alembic", "downgrade", _PARENT), check=True, env=environment)
     finally:
         asyncio.run(_execute(url, "public", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
