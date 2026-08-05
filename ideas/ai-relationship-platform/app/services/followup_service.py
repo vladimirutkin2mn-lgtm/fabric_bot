@@ -350,7 +350,11 @@ class FollowUpService:
                 )
             elif analysis is not None:
                 stored = analysis.result_json
-            return None if stored is None else AnalysisResult.model_validate(stored)
+            if stored is None:
+                return None
+            return AnalysisResult.model_validate_json(
+                json.dumps(stored, ensure_ascii=False, separators=(",", ":"))
+            )
 
     async def _complete(
         self,
