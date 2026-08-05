@@ -88,10 +88,7 @@ async def test_first_paid_period_completes_existing_checkout_order_once(
     paid = _paid(order_id)
 
     assert await service.apply_paid_period(user_id, paid) is PeriodApplyOutcome.APPLIED
-    assert (
-        await service.apply_paid_period(user_id, paid)
-        is PeriodApplyOutcome.ALREADY_APPLIED
-    )
+    assert await service.apply_paid_period(user_id, paid) is PeriodApplyOutcome.ALREADY_APPLIED
 
     async with payment_db() as session:
         assert await session.scalar(select(func.count()).select_from(PaymentOrder)) == 1
