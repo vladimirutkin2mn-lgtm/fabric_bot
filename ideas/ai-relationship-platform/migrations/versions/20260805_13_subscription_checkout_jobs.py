@@ -14,10 +14,7 @@ down_revision: str | None = "20260805_12"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_OLD_TYPES = (
-    "'webhook_processing','subscription_renewal','payment_reconciliation',"
-    "'refund_reconciliation'"
-)
+_OLD_TYPES = "'webhook_processing','subscription_renewal','payment_reconciliation','refund_reconciliation'"
 _NEW_TYPES = (
     "'webhook_processing','subscription_renewal','payment_reconciliation',"
     "'refund_reconciliation','subscription_checkout_reconcile'"
@@ -41,12 +38,9 @@ def downgrade() -> None:
     bind = op.get_bind()
     live_rows = bind.scalar(
         sa.text(
-            "SELECT count(*) FROM billing_jobs "
-            "WHERE job_type = 'subscription_checkout_reconcile'"
+            "SELECT count(*) FROM billing_jobs WHERE job_type = 'subscription_checkout_reconcile'"
         )
     )
     if live_rows:
-        raise RuntimeError(
-            "downgrade refused: subscription checkout reconciliation jobs exist"
-        )
+        raise RuntimeError("downgrade refused: subscription checkout reconciliation jobs exist")
     _replace_constraint(_OLD_TYPES)
