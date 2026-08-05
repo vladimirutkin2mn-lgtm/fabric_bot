@@ -90,12 +90,14 @@ class PastDueSubscriptionPeriod:
 
 
 def subscription_period_key(period_start: datetime, period_end: datetime) -> str:
-    """Return a provider-independent canonical key for one UTC billing period."""
+    """Return a compact canonical key for one exact UTC billing period."""
     start = _aware_utc(period_start)
     end = _aware_utc(period_end)
     if end <= start:
         raise SubscriptionLifecycleError("subscription period range is invalid")
-    return f"{start.isoformat(timespec='seconds')}..{end.isoformat(timespec='seconds')}"
+    start_microseconds = round(start.timestamp() * 1_000_000)
+    end_microseconds = round(end.timestamp() * 1_000_000)
+    return f"{start_microseconds:x}.{end_microseconds:x}"
 
 
 def _aware_utc(value: datetime) -> datetime:
