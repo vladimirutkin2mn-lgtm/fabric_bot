@@ -15,7 +15,7 @@ from app.config import Settings
 from app.db.base import Base
 from app.db.models import BillingJob
 from app.observability.settings import ObservabilitySettings
-from app.services.release_readiness import ReleaseGateName
+from app.services.release_readiness import ReleaseGateName, ReleaseReadiness
 
 pytestmark = pytest.mark.postgres
 
@@ -81,8 +81,8 @@ def _headers() -> dict[str, str]:
     return {"X-Admin-Token": "release-admin-token"}
 
 
-async def _pass_all_gates(client: AsyncClient) -> dict[str, object]:
-    payload: dict[str, object] = {}
+async def _pass_all_gates(client: AsyncClient) -> ReleaseReadiness:
+    payload: ReleaseReadiness | None = None
     for index, gate in enumerate(ReleaseGateName, start=1):
         response = await client.post(
             f"/admin/release-gates/{gate.value}",
@@ -90,7 +90,8 @@ async def _pass_all_gates(client: AsyncClient) -> dict[str, object]:
             json={"status": "passed", "evidence_ref": f"staging/run-{index}"},
         )
         assert response.status_code == 200, response.text
-        payload = response.json()
+        payload = ReleaseReadiness.model_validate(response.json())
+    assert payload is not None
     return payload
 
 
@@ -106,17 +107,18 @@ async def test_release_gates_require_admin_auth_and_current_evidence(
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         missing = await client.get("/admin/release-readiness")
-        initial = await client.get("/admin/release-readiness", headers=_headers())
+        initial_response = await client.get("/admin/release-readiness", headers=_headers())
         final_payload = await _pass_all_gates(client)
 
     assert missing.status_code == 401
-    assert initial.status_code == 200
-    assert initial.json()["ready_for_limited_production"] is False
-    assert {gate["state"] for gate in initial.json()["gates"]} == {"missing"}
-    assert final_payload["ready_for_limited_production"] is True
-    assert final_payload["blockers"] == []
-    assert final_payload["schema_revision"] == "20260805_16"
-    assert {gate["state"] for gate in final_payload["gates"]} == {"passed"}
+    assert initial_response.status_code == 200
+    initial = ReleaseReadiness.model_validate(initial_response.json())
+    assert initial.ready_for_limited_production is False
+    assert {gate.state.value for gate in initial.gates} == {"missing"}
+    assert final_payload.ready_for_limited_production is True
+    assert final_payload.blockers == []
+    assert final_payload.schema_revision == "20260805_16"
+    assert {gate.state.value for gate in final_payload.gates} == {"passed"}
 
 
 async def test_new_code_sha_invalidates_previous_passes(
@@ -135,10 +137,10 @@ async def test_new_code_sha_invalidates_previous_passes(
         response = await client.get("/admin/release-readiness", headers=_headers())
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["ready_for_limited_production"] is False
-    assert {gate["state"] for gate in payload["gates"]} == {"stale"}
-    assert all(gate["current_code"] is False for gate in payload["gates"])
+    payload = ReleaseReadiness.model_validate(response.json())
+    assert payload.ready_for_limited_production is False
+    assert {gate.state.value for gate in payload.gates} == {"stale"}
+    assert all(gate.current_code is False for gate in payload.gates)
 
 
 async def test_financial_manual_review_recloses_ready_release(
@@ -152,7 +154,7 @@ async def test_financial_manual_review_recloses_ready_release(
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         ready = await _pass_all_gates(client)
-        assert ready["ready_for_limited_production"] is True
+        assert ready.ready_for_limited_production is True
         sessions = async_sessionmaker(release_engine, expire_on_commit=False)
         async with sessions.begin() as session:
             session.add(
@@ -167,10 +169,10 @@ async def test_financial_manual_review_recloses_ready_release(
             )
         response = await client.get("/admin/release-readiness", headers=_headers())
 
-    payload = response.json()
-    assert payload["ready_for_limited_production"] is False
-    assert payload["financial_blockers"]["billing_jobs_manual_review"] == 1
-    assert "billing_jobs_manual_review" in payload["blockers"]
+    payload = ReleaseReadiness.model_validate(response.json())
+    assert payload.ready_for_limited_production is False
+    assert payload.financial_blockers["billing_jobs_manual_review"] == 1
+    assert "billing_jobs_manual_review" in payload.blockers
 
 
 async def test_pass_attestation_refuses_incomplete_gate_configuration(
