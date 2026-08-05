@@ -154,6 +154,4 @@ class SubscriptionGateway(Protocol):
 
 
 class MerchantManagedSubscriptionGateway(SubscriptionGateway, Protocol):
-    async def renew_subscription(
-        self, request: RenewSubscription
-    ) -> SubscriptionProviderFact: ...
+    async def renew_subscription(self, request: RenewSubscription) -> SubscriptionProviderFact: ...
