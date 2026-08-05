@@ -54,9 +54,7 @@ class SubscriptionManagementService:
             )
             return None if value is None else self._view(value)
 
-    async def cancel(
-        self, user_id: UUID, subscription_id: UUID
-    ) -> SubscriptionManagementOutcome:
+    async def cancel(self, user_id: UUID, subscription_id: UUID) -> SubscriptionManagementOutcome:
         subscription = await self._owned(user_id, subscription_id)
         if subscription is None:
             return SubscriptionManagementOutcome.NOT_FOUND
@@ -69,9 +67,7 @@ class SubscriptionManagementService:
         await self._processor.apply(fact)
         return SubscriptionManagementOutcome.UPDATED
 
-    async def resume(
-        self, user_id: UUID, subscription_id: UUID
-    ) -> SubscriptionManagementOutcome:
+    async def resume(self, user_id: UUID, subscription_id: UUID) -> SubscriptionManagementOutcome:
         subscription = await self._owned(user_id, subscription_id)
         if subscription is None:
             return SubscriptionManagementOutcome.NOT_FOUND
