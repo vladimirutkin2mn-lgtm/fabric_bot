@@ -14,6 +14,28 @@ For every milestone:
 6. Update documentation.
 7. Summarize decisions and remaining risks.
 
+## Current active continuation
+
+Milestones 0–8 describe the original MVP plan and their implemented vertical slices. Milestone 5
+was subsequently expanded into production billing stages. The original credit/paywall milestone,
+production billing foundation and production one-time payments are complete, but Milestone 5 is
+**not fully complete**.
+
+The authoritative continuation checklist is
+[`docs/milestone-5-roadmap.md`](docs/milestone-5-roadmap.md):
+
+- [x] M5A — credits, preview and mock payments;
+- [x] M5A.1 — monotonic paid report access;
+- [x] M5B.1 — production billing foundation;
+- [x] M5B.2 — YooKassa/Stripe one-time payments;
+- [ ] **M5B.3 — subscriptions and renewals**;
+- [ ] **M5B.4 — provider monetary refunds**;
+- [ ] **M5C — one paid follow-up question**.
+
+Do not declare the monetization milestone complete until M5B.3, M5B.4 and M5C satisfy their
+acceptance criteria. The current implementation sequence is M5B.3 → M5B.4 → M5C → provider
+sandbox acceptance → limited production launch.
+
 ## Milestone 0 — Bootstrap the project
 
 ### Goal
@@ -212,6 +234,11 @@ Create a monetizable flow with correct accounting and local testability.
 - Technical failure creates one refund.
 - Repeated payment callback credits the user once.
 - End-to-end local test covers preview → mock checkout → paid analysis.
+
+### Production continuation
+
+The deliverables above cover M5A. Production-ready completion additionally requires M5B.1–M5B.4
+and M5C as defined in `docs/milestone-5-roadmap.md`. M5B.3 is the current active milestone.
 
 ## Milestone 6 — Privacy, deletion, retention
 

@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from app.api.main import create_app
 from app.config import Settings
 
-_HEAD = "20260804_11"
+_HEAD = "20260805_12"
 
 
 def engine_mock(
@@ -98,7 +98,7 @@ async def test_readiness_reports_missing_schema_metadata(settings: Settings) -> 
 async def test_readiness_reports_outdated_schema(settings: Settings) -> None:
     app = create_app(
         settings,
-        engine_mock(revisions=("20260804_10",)),
+        engine_mock(revisions=("20260804_11",)),
         schema_heads=(_HEAD,),
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
